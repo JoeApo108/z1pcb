@@ -209,6 +209,7 @@ class Design:
     holes: Holes
     files: dict  # role -> list of paths
     hashes: dict  # role -> sha256 over the role's files
+    mask: object = None  # solder mask openings of the milled side (a mask Gerber is drawn as its openings)
 
 
 def file_hash(paths):
@@ -234,20 +235,34 @@ def validate(copper, board, holes):
         )
 
 
-def load_design(copper, outline, drills=()):
-    """Load and cross-check one board side. `drills` may be empty (board without holes)."""
+def load_design(copper, outline, drills=(), mask=None):
+    """Load and cross-check one board side. `drills` may be empty (board without holes), `mask` is optional."""
     if not copper or not outline:
         raise UserError('Chýba súbor medi alebo obrysu.')
     drills = [d for d in drills if d]
     cu, bd, hl = load_copper(copper), load_board(outline), load_drills(drills)
     validate(cu, bd, hl)
-    files = {'copper': [copper], 'outline': [outline], 'drills': drills}
-    return Design(cu, bd, hl, files, {k: file_hash(v) for k, v in files.items() if v})
+    openings = None
+    if mask:
+        openings = load_copper(mask)
+        if openings.is_empty:
+            raise UserError('Súbor masky %s neobsahuje žiadne otvory.' % Path(mask).name)
+        if openings.difference(bd.buffer(1.0)).area > 0.05 * openings.area:
+            raise UserError('Otvory masky ležia mimo obrysu dosky: maska nepatrí k tejto doske alebo strane.')
+    files = {'copper': [copper], 'outline': [outline], 'drills': drills, 'mask': [mask] if mask else []}
+    return Design(cu, bd, hl, files, {k: file_hash(v) for k, v in files.items() if v}, openings)
 
 
 def detect_layers(paths):
     """Sort fabrication files: X2 FileFunction first, then common KiCad/EasyEDA/Altium/Eagle names."""
-    found = {'copper_top': None, 'copper_bottom': None, 'outline': None, 'drills': []}
+    found = {
+        'copper_top': None,
+        'copper_bottom': None,
+        'mask_top': None,
+        'mask_bottom': None,
+        'outline': None,
+        'drills': [],
+    }
     for p in sorted(map(Path, paths)):
         if not p.is_file():
             continue
@@ -266,6 +281,16 @@ def detect_layers(paths):
             continue
         if ff.startswith('profile') or re.search(r'edge[._]?cuts|\.gm1$|\.gko$|\.gml$|outline', low):
             found['outline'] = found['outline'] or str(p)
+            continue
+        mask_side = None
+        if ff.startswith('soldermask'):
+            mask_side = 'mask_bottom' if ',bot' in ff else 'mask_top'
+        elif re.search(r'b[._]mask|\.gbs$|bottom.?solder.?mask|soldermask.?bot', low):
+            mask_side = 'mask_bottom'
+        elif re.search(r'f[._]mask|\.gts$|top.?solder.?mask|soldermask.?top', low):
+            mask_side = 'mask_top'
+        if mask_side:
+            found[mask_side] = found[mask_side] or str(p)
             continue
         if ff.startswith('copper'):
             if ',inr' in ff:

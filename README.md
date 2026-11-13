@@ -18,6 +18,10 @@ The user interface is in Slovak.
 - **Check:** copper damage, shorts, free copper left, holes, cutouts and outline, and whether the G-code was
   made from the design files now loaded. Works for Makera Studio's G-code too.
 - **Simulation:** material removal on the machine's timeline, tool changes, time estimate from the Z1's axis limits.
+- **Solder mask:** with the mask Gerber of the milled side, the job is split into two programs: copper first; then,
+  after the UV mask is applied and cured on the board left in place, the pads are scraped open with Makera's
+  spring-loaded remover, and only then holes, cutouts and outline are cut. How the Z1 measures the spring-loaded
+  tool after `M6` is not verified yet.
 
 ## Installation (Windows 10/11)
 
@@ -27,6 +31,17 @@ shows "Windows protected your PC": click **More info → Run anyway** (Slovak Wi
 aj tak“). After that the app offers newer versions itself and installs only those signed by the release key.
 
 Not yet verified on the machine: the height map (autoleveling) with G-code from this app. Make the first board a test.
+
+## Notes from reading the Z1 firmware (1.1.3)
+
+- Outside the probed rectangle the Z1 applies no height correction at all (Makera changed Smoothieware's
+  clamping, `CartGridStrategy::doCompensation`). Probe the whole stock: the clearing cutter goes past the board edge.
+- Don't stop a grid probe halfway; if it stops, power-cycle before probing again
+  ([firmware issue #7](https://github.com/MakeraInc/MakeraZ1Firmware/issues/7)).
+- Streamed lines go through a 130-byte buffer without a length check and are kept to 63 characters
+  (`SerialConsole.cpp`, `Player.h`). This app writes no line longer than 128 characters; commands are under 40.
+- The spindle waits a fixed 8 s after `M3` and 4 s after `M5`; all axes accelerate at 150 mm/s². The time estimate
+  includes both.
 
 ## Running from source
 

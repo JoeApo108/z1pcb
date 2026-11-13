@@ -94,3 +94,16 @@ Stav: 60 testov na Macu aj na Windows 11 (VM), build 0.3.0 z wheelov zamknutých
 - [x] README: screenshoty (`docs/`), zoznam funkcií
 - [ ] Čistenie len vo vybranej zóne (napr. pásmo 230 V) — čaká na súhlas
 - [ ] `M495` (výšková mapa) v súbore, predvolene vypnuté — čaká na súhlas
+
+## Fáza 7 — nepájivá maska (0.3.3)
+- [x] Vrstva masky (`B.Mask`/`F.Mask`, X2 `Soldermask`) sa rozpozná a načíta; otvory mimo dosky sú chyba
+- [x] Voľba „S nepájivou maskou (2 programy)“: 1. program meď (T4, T2), 2. program odkrytie plôšok nástrojom T5, potom otvory, výrezy, obrys; uloženie `…_1_med.cnc` a `…_2_maska_otvory_obrys.cnc`
+- [x] Nástroj na masku T5 (Makera „Solder Mask Removal“: hrot 0,3 mm, 6 000 ot./min, posuv 400, zanorenie 200, hĺbka 0,2) aj z knižnice Studia
+- [x] Kontrola: plôšky odkryté (IR doska 99,7 %), maska odstránená mimo otvorov (0), škrabák sa nepočíta ako rez do medi; Studio nástroj „… Solder Mask …“ sa rozpozná
+- [x] Simulácia: škrabák nemení výšku, pri T5 pokyn na nanesenie masky; postup na stroji s krokom masky
+- [x] Náhľad kreslí ako chyby len to, čo kontrola počíta ako chybu
+- [ ] Na stroji: ako Z1 zmeria pružiaci nástroj T5 po `M6`
+- [ ] IR projekt: pridať `B.Mask` do exportu v `make_pcb_cnc.py` (mimo z1pcb) — čaká na súhlas
+- [x] Z firmvéru 1.1.3: žiadny riadok G-kódu nad 128 znakov (hlavička rozdelená, mená nástrojov skrátené; firmvér kopíruje riadok do 130-bajtového buffera bez kontroly)
+- [x] Odhad času ako firmvér: zrýchlenie 150 mm/s² pri rýchloposuvoch a zvislých pohyboch, vreteno 8 s po M3 a 4 s po M5
+- [x] Postup na stroji a README: výšková mapa musí pokryť celý polotovar (mimo nej firmvér nekoriguje), meranie sondou nezastavovať (issue #7)

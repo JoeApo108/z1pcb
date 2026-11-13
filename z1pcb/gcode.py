@@ -6,6 +6,20 @@ from dataclasses import asdict
 from . import __version__
 
 PLACEMENTS = ('center', 'corner')
+# The Z1 copies each streamed line into a 130-byte buffer without a length check (SerialConsole.cpp, buf[130])
+# and keeps 63 characters of it; longer lines depend on the closed ESP32 firmware. Commands stay far below.
+MAX_LINE = 128
+
+
+def packed(prefix, items, limit=MAX_LINE):
+    """prefix + '|'-joined items, split over as many lines as needed to stay within the limit."""
+    lines, cur = [], []
+    for item in items:
+        if cur and len(prefix) + len('|'.join(cur + [item])) > limit:
+            lines.append(prefix + '|'.join(cur))
+            cur = []
+        cur.append(item)
+    return lines + ([prefix + '|'.join(cur)] if cur else [])
 
 
 class Placement:
@@ -29,7 +43,7 @@ class Placement:
         return ((p[0] - self.tx) / self.mx, p[1] - self.ty)
 
 
-def header(ops, place, prm, inputs):
+def header(ops, place, prm, inputs, part=None):
     tools = {op.tool.number: op.tool for op in ops}
     out = [
         ';@MKR|BEGIN',
@@ -46,17 +60,23 @@ def header(ops, place, prm, inputs):
         ';Z1PCB|TRANSFORM|mx=%g|tx=%.6f|ty=%.6f|side=%s|anchor=%s'
         % (place.mx, place.tx, place.ty, place.side, place.anchor)
     )
-    out.append(';Z1PCB|PARAMS|' + '|'.join('%s=%s' % (k, v) for k, v in asdict(prm).items()))
+    out += packed(';Z1PCB|PARAMS|', ['%s=%s' % (k, v) for k, v in asdict(prm).items()])
     for n, tl in sorted(tools.items()):
         out.append(';Z1PCB|CUT|number=%d|rpm=%d|feed=%d|plunge=%d' % (n, tl.rpm, tl.feed, tl.plunge))
+    for n, tl in sorted(tools.items()):
+        if tl.kind == 'mask':
+            out.append(';Z1PCB|MASKTOOL|number=%d' % n)
+    if part:
+        out.append(';Z1PCB|PART|n=%d|of=%d' % part)
     for role, digest in sorted((inputs or {}).items()):
         out.append(';Z1PCB|INPUT|role=%s|sha256=%s' % (role, digest))
     return out
 
 
-def render(ops, place, prm, inputs=None):
-    """G-code text ('\\n' line ends). `inputs`: role -> sha256 of the design files, recorded in the header."""
-    L = header(ops, place, prm, inputs)
+def render(ops, place, prm, inputs=None, part=None):
+    """G-code text ('\\n' line ends). `inputs`: role -> sha256 of the design files, recorded in the header;
+    `part`: (n, of) when the job is split into programs (solder mask)."""
+    L = header(ops, place, prm, inputs, part)
     emit = L.append
     emit('G90 G21')
     st = {'z': prm.clearance_z, 'xy': None}  # 'xy': current position in the design frame (None: unknown)
@@ -94,7 +114,7 @@ def render(ops, place, prm, inputs=None):
             continue
         emit('')
         emit(';@MKR|TOOLPATH_START|toolpath_number=%d' % k)
-        emit('; %s - T%d %s' % (op.name, tl.number, tl.name))
+        emit(('; %s - T%d %s' % (op.name, tl.number, tl.name))[:MAX_LINE])
         if tl.number != loaded:  # one M6 per tool: every M6 stops the job and re-measures the tool
             emit('T%d M6' % tl.number)
             loaded = tl.number
@@ -147,6 +167,9 @@ def render(ops, place, prm, inputs=None):
             emit('M5')
             st['z'] = prm.clearance_z
     L += ['M05', 'G28', 'M02']
+    too_long = [ln for ln in L if len(ln) > MAX_LINE]
+    if too_long:  # a bug here, not a user error: every line we write is built to fit
+        raise ValueError('G-code line longer than %d characters: %s' % (MAX_LINE, too_long[0][:60]))
     return '\n'.join(L) + '\n'
 
 

@@ -207,3 +207,16 @@ def test_qt_dialog_buttons_in_slovak(app):
     from PySide6.QtCore import QCoreApplication
 
     assert QCoreApplication.translate('QMessageBox', 'Show Details...').startswith('Zobraziť')  # Qt's own Slovak file
+
+
+def test_mask_job_saves_two_programs(app, win, monkeypatch, tmp_path):
+    assert win.design.mask is not None and win.fields['with_mask'].isEnabled()
+    win.fields['with_mask'].setChecked(True)
+    r = computed(app, win)
+    assert len(r.parts) == 2 and '2 programy' in win.details.text()
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *a, **k: (str(tmp_path / 'deska.cnc'), ''))
+    win.save()
+    assert sorted(p.name for p in tmp_path.glob('deska_*.cnc')) == ['deska_1_med.cnc', 'deska_2_maska_otvory_obrys.cnc']
+    win.apply_detect([f for f in FILES if 'Mask' not in f])
+    assert win.design.mask is None and not win.fields['with_mask'].isEnabled()
+    assert win.settings()[1].mask is False  # still ticked, but no mask file: a single program

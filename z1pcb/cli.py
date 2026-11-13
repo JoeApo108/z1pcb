@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from pathlib import Path
 
 from . import cam, gcode, gerberio, job
 from .errors import UserError
@@ -24,6 +25,9 @@ def main(argv=None):
         p.add_argument('--thickness', type=float, default=1.6)
         p.add_argument('--isolation-only', action='store_true', help='leave free copper, only isolate the nets')
         p.add_argument('--copper-um', type=int, choices=sorted(cam.COPPER_DEPTH), default=35, help='copper foil')
+        p.add_argument(
+            '--mask', help='solder mask Gerber of the milled side: two programs, pads opened before drilling'
+        )
         if name == 'make':
             p.add_argument('--side', choices=('bottom', 'top'), default='bottom')
             p.add_argument('--stock', type=stock_arg, help='e.g. 160x60; default: the smallest that fits')
@@ -32,10 +36,10 @@ def main(argv=None):
             p.add_argument('--tabs', type=int, default=4)
             p.add_argument('-o', '--out', required=True)
         else:
-            p.add_argument('--gcode', required=True)
+            p.add_argument('--gcode', required=True, nargs='+', help='one file, or both programs of a mask job')
     a = ap.parse_args(argv)
     try:
-        design = gerberio.load_design(a.copper, a.outline, a.drill)
+        design = gerberio.load_design(a.copper, a.outline, a.drill, a.mask)
         if a.cmd == 'make':
             tools = cam.default_tools()
             prm = cam.Params(
@@ -44,10 +48,13 @@ def main(argv=None):
                 copper_depth=a.depth or cam.COPPER_DEPTH[a.copper_um],
                 tab_count=a.tabs,
                 full_clear=not a.isolation_only,
+                mask=bool(a.mask),
             )
             stock = a.stock or job.fit_stock(design.board, tools, prm)
             r = job.make(design, tools, prm, stock, a.side, a.anchor)
-            gcode.save(r.text, a.out)
+            out = Path(a.out)
+            for suffix, text in r.parts:  # with a mask: <name>_1_med.cnc and <name>_2_maska_otvory_obrys.cnc
+                gcode.save(text, out.with_name(out.stem + suffix + (out.suffix or '.cnc')))
             print(
                 'stock %g x %g mm, tools T%s, estimated time %s'
                 % (*stock, ', T'.join(map(str, r.prog.used_tools())), hms(r.prog.total))

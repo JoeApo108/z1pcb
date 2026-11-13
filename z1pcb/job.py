@@ -19,7 +19,8 @@ class Result:
     expect: object
     frame: object  # design frame <-> machine frame (gcode.Placement or Frame)
     stock: tuple = None  # (x, y) or None when unknown
-    text: str = None  # G-code we generated; None for a file from elsewhere
+    text: str = None  # G-code we generated (all programs one after another); None for a file from elsewhere
+    parts: list = field(default_factory=list)  # [(file suffix, text)]: one program, or two with a solder mask
     source: str = None  # path of a checked file
     report: dict = field(default_factory=dict)
 
@@ -57,11 +58,21 @@ def check_fit(board, stock, tools, prm):
 def make(design, tools, prm, stock, side='bottom', anchor='center', progress=None):
     say = progress or (lambda stage, pct: None)
     check_fit(design.board, stock, tools, prm)
-    ops, report = cam.generate(design.copper, design.board, design.holes, tools, prm, progress=say)
+    ops, report = cam.generate(design.copper, design.board, design.holes, tools, prm, progress=say, mask=design.mask)
     say('write', 96)
     place = gcode.Placement(design.board.bounds, stock, side, anchor, cam.reach(tools, prm))
-    text = gcode.render(ops, place, prm, inputs=design.hashes)
+    if prm.mask:  # two programs; the solder mask goes on between them, the board stays on the bed
+        parts = [
+            (suffix, gcode.render([o for o in ops if o.part == n], place, prm, design.hashes, part=(n, 2)))
+            for n, suffix in ((1, '_1_med'), (2, '_2_maska_otvory_obrys'))
+        ]
+    else:
+        parts = [('', gcode.render(ops, place, prm, inputs=design.hashes))]
+    text = ''.join(t for _, t in parts)
     prog = gparse.parse_text(text)
+    if len(parts) > 1:
+        report['part_times'] = [('meď', gparse.parse_text(parts[0][1]).total)]
+        report['part_times'].append(('maska, otvory, obrys', prog.total - report['part_times'][0][1]))
     say('check', 97)
     expect = checks.Expect(
         full_clear=prm.full_clear,
@@ -72,21 +83,36 @@ def make(design, tools, prm, stock, side='bottom', anchor='center', progress=Non
         inputs=design.hashes,
         copper_thickness=prm.copper_thickness,
         copper_depth=prm.copper_depth,
+        mask=prm.mask,
     )
-    res, geom = checks.check(prog, design.copper, design.board, design.holes, prm.thickness, expect, want_geom=True)
+    res, geom = checks.check(
+        prog, design.copper, design.board, design.holes, prm.thickness, expect, want_geom=True, mask=design.mask
+    )
     rows, ok = checks.verdict(res, expect)
-    return Result(design, prog, res, geom, rows, ok, expect, place, tuple(stock), text=text, report=report)
+    return Result(design, prog, res, geom, rows, ok, expect, place, tuple(stock), text=text, parts=parts, report=report)
 
 
 def check_file(design, path, thickness=1.6, full_clear=True, copper_thickness=0.035, progress=None):
+    """Check one G-code file, or several that run one after another (a solder mask job: list of paths)."""
     say = progress or (lambda stage, pct: None)
     say('parse', 10)
-    prog = gparse.parse(path)
+    paths = [path] if isinstance(path, (str, bytes)) or not hasattr(path, '__iter__') else list(path)
+    texts = []
+    for p in paths:
+        with open(p, errors='replace') as fh:
+            texts.append(fh.read())
+    prog = gparse.parse_text('\n'.join(texts))
     say('check', 30)
-    expect = checks.Expect(full_clear=full_clear, inputs=design.hashes, copper_thickness=copper_thickness)
-    res, geom = checks.check(prog, design.copper, design.board, design.holes, thickness, expect, want_geom=True)
+    with_mask = design.mask is not None and any(t.kind == 'mask' for t in prog.tools.values())
+    expect = checks.Expect(
+        full_clear=full_clear, inputs=design.hashes, copper_thickness=copper_thickness, mask=with_mask
+    )
+    res, geom = checks.check(
+        prog, design.copper, design.board, design.holes, thickness, expect, want_geom=True, mask=design.mask
+    )
     rows, ok = checks.verdict(res, expect)
     stock = prog.stock[:2] if prog.stock else None
     return Result(
-        design, prog, res, geom, rows, ok, expect, Frame(res['mx'], res['tx'], res['ty']), stock, source=str(path)
-    )
+        design, prog, res, geom, rows, ok, expect, Frame(res['mx'], res['tx'], res['ty']), stock,
+        source=', '.join(map(str, paths)),
+    )  # fmt: skip

@@ -23,6 +23,7 @@ LAYER = {
     4: QColor('#3b82f6'),
     2: QColor('#22d3ee'),
     3: QColor('#f59e0b'),
+    5: QColor('#c084fc'),
     'problem': QColor('#ef4444'),
 }
 BANNER = {  # state -> (background, text)

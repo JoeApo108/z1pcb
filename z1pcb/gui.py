@@ -75,12 +75,22 @@ STAGES = {
 STATE_TEXT = {'ok': 'v poriadku', 'bad': 'chyba', 'warn': 'pozor', 'info': 'info'}
 STATE_COLOR = {'ok': C['ok'], 'bad': C['bad'], 'warn': C['warn'], 'info': C['muted']}
 ANCHORS = (('center', 'V strede polotovaru'), ('corner', 'V ľavom prednom rohu'))
-ROLES = (('clear', 'T4', 'Plochá fréza'), ('vbit', 'T2', 'Rytec – hrot'), ('corn', 'T3', 'Kukuričná fréza'))
+ROLES = (
+    ('clear', 'T4', 'Plochá fréza'),
+    ('vbit', 'T2', 'Rytec – hrot'),
+    ('corn', 'T3', 'Kukuričná fréza'),
+    ('mask', 'T5', 'Odstránenie masky – hrot'),
+)
 ROLE_FIELDS = {  # fields a library tool fills in; editing one of them by hand means 'own values' again
     'clear': ('t_clear', 'feed_clear', 'plunge_clear', 'rpm_clear', 'clear_pct'),
     'vbit': ('t_vtip', 't_vang', 'feed_vbit', 'plunge_vbit', 'rpm_vbit'),
     'corn': ('t_corn', 'feed_corn', 'plunge_corn', 'rpm_corn', 'level_step'),
+    'mask': ('t_mask', 'feed_mask', 'plunge_mask', 'rpm_mask', 'mask_depth'),
 }
+MASK_PAUSE = (
+    'Koniec 1. programu. Dosku nechaj prilepenú a nulový bod nemeň: očisti ju, nanes UV masku a vytvrď ju. '
+    'Potom spusti 2. program.'
+)
 
 
 # ---------- background work
@@ -173,7 +183,7 @@ class Main(QMainWindow):
         self.store = make_store()
         self.design = None  # loaded files (gerberio.Design)
         self.result = None  # job.Result that matches the design and the settings on screen
-        self.paths_ = {'copper': '', 'outline': '', 'drills': []}
+        self.paths_ = {'copper': '', 'outline': '', 'drills': [], 'mask': ''}
         self.detected = None
         self.epoch = 0  # grows with every change of files or settings; a result is valid for one epoch
         self.job = None  # running compute / check job
@@ -222,7 +232,8 @@ class Main(QMainWindow):
         open_btn.clicked.connect(self.pick_folder)
         g.addWidget(open_btn, 0, 0, 1, 3)
         self.file_lbl = {}
-        for r, (key, label) in enumerate((('copper', 'Meď'), ('outline', 'Obrys'), ('drills', 'Vŕtanie')), 1):
+        files = (('copper', 'Meď'), ('outline', 'Obrys'), ('drills', 'Vŕtanie'), ('mask', 'Maska'))
+        for r, (key, label) in enumerate(files, 1):
             g.addWidget(QLabel(label), r, 0)
             v = QLabel('—')
             v.setObjectName('FileMissing')
@@ -234,7 +245,7 @@ class Main(QMainWindow):
             b.setText('Zmeniť')
             b.clicked.connect(lambda _=False, k=key: self.pick_file(k))
             g.addWidget(b, r, 2)
-        g.addWidget(QLabel('Strana'), 4, 0)
+        g.addWidget(QLabel('Strana'), 5, 0)
         seg = QHBoxLayout()
         seg.setSpacing(0)
         self.side_grp = QButtonGroup(self)
@@ -249,7 +260,7 @@ class Main(QMainWindow):
         self.side_grp.button(0).setChecked(True)
         self.side_grp.idToggled.connect(self.side_changed)
         seg.addStretch(1)
-        g.addLayout(seg, 4, 1, 1, 2)
+        g.addLayout(seg, 5, 1, 1, 2)
         g.setColumnStretch(1, 1)
         sv.addWidget(box)
         sv.addWidget(
@@ -289,6 +300,7 @@ class Main(QMainWindow):
             'clear': self.add_field('t_clear', spin(tools['clear'].diameter, 0.5, 3.175, 2, ' mm', 0.1)),
             'vbit': self.add_field('t_vtip', spin(tools['vbit'].diameter, 0.05, 0.5, 2, ' mm', 0.05)),
             'corn': self.add_field('t_corn', spin(tools['corn'].diameter, 0.3, 3.175, 2, ' mm', 0.1)),
+            'mask': self.add_field('t_mask', spin(tools['mask'].diameter, 0.1, 1.0, 2, ' mm', 0.05)),
         }
         row = 0
         for role, number, label in ROLES:
@@ -355,6 +367,13 @@ class Main(QMainWindow):
             'Vypnuté: izolačná drážka okolo spojov a odstránenie úzkych pásikov medi, bez plochej frézy.'
         )
         g.addWidget(hint(text), 5, 0, 1, 2)
+        self.add_field('with_mask', QCheckBox('S nepájivou maskou (2 programy)')).setEnabled(False)
+        g.addWidget(self.fields['with_mask'], 6, 0, 1, 2)
+        text = (
+            '1. program frézuje meď. Potom na dosku nanesieš UV masku, 2. program odkryje plôšky a až potom '
+            'vŕta a reže obrys. Potrebuje súbor masky (napr. B.Mask) a nástroj na masku (T5).'
+        )
+        g.addWidget(hint(text), 7, 0, 1, 2)
         sv.addWidget(box)
 
         self.adv_btn = QToolButton()
@@ -367,27 +386,27 @@ class Main(QMainWindow):
             h = QLabel(text)
             h.setObjectName('Hint')
             g.addWidget(h, 0, c, Qt.AlignRight)
-        for r, (key, number) in enumerate((('clear', 'T4'), ('vbit', 'T2'), ('corn', 'T3')), 1):
+        for r, (key, number) in enumerate((('clear', 'T4'), ('vbit', 'T2'), ('corn', 'T3'), ('mask', 'T5')), 1):
             tl = tools[key]
             g.addWidget(QLabel(number), r, 0)
             g.addWidget(self.add_field('feed_' + key, ispin(tl.feed, 20, 1200, step=50, width=78)), r, 1)
             g.addWidget(self.add_field('plunge_' + key, ispin(tl.plunge, 20, 600, step=20, width=78)), r, 2)
             g.addWidget(self.add_field('rpm_' + key, ispin(tl.rpm, 3000, 13000, step=500, width=78)), r, 3)
-        g.addWidget(hint('Posuv a zanorenie v mm/min, otáčky za minútu.'), 4, 0, 1, 4)
-        g.addWidget(QLabel('Hĺbka na prechod'), 5, 0, 1, 2)
-        w = self.add_field('level_step', spin(prm.level_step, 0.1, 1.0, 2, ' mm', 0.05, width=78))
-        g.addWidget(w, 5, 3, Qt.AlignRight)
-        g.addWidget(QLabel('Krok plochej frézy'), 6, 0, 1, 2)
-        w = self.add_field('clear_pct', spin(prm.clear_step * 50, 20, 90, 0, ' %', 5, width=78))
-        g.addWidget(w, 6, 3, Qt.AlignRight)
-        g.addWidget(QLabel('Výška priblíženia'), 7, 0, 1, 2)
-        w = self.add_field('approach_z', spin(prm.approach_z, 0.2, 2.0, 2, ' mm', 0.1, width=78))
-        g.addWidget(w, 7, 3, Qt.AlignRight)
+        g.addWidget(hint('Posuv a zanorenie v mm/min, otáčky za minútu.'), 5, 0, 1, 4)
+        rows = (
+            ('Hĺbka na prechod', 'level_step', spin(prm.level_step, 0.1, 1.0, 2, ' mm', 0.05, width=78)),
+            ('Krok plochej frézy', 'clear_pct', spin(prm.clear_step * 50, 20, 90, 0, ' %', 5, width=78)),
+            ('Výška priblíženia', 'approach_z', spin(prm.approach_z, 0.2, 2.0, 2, ' mm', 0.1, width=78)),
+            ('Hĺbka do masky (T5)', 'mask_depth', spin(prm.mask_depth, 0.02, 0.5, 2, ' mm', 0.05, width=78)),
+        )
+        for r, (label, key, w) in enumerate(rows, 6):
+            g.addWidget(QLabel(label), r, 0, 1, 3)
+            g.addWidget(self.add_field(key, w), r, 3, Qt.AlignRight)
         text = (
             'Otvory, výrezy a obrys sa režú po vrstvách. Krok plochej frézy je v percentách jej priemeru. '
-            'Nad výškou priblíženia ide nástroj rýchloposuvom.'
+            'Nad výškou priblíženia ide nástroj rýchloposuvom. Nástroj na masku pruží, hĺbka je jeho stlačenie.'
         )
-        g.addWidget(hint(text), 8, 0, 1, 4)
+        g.addWidget(hint(text), 10, 0, 1, 4)
         sv.addWidget(self.adv_box)
         sv.addStretch(1)
 
@@ -451,6 +470,7 @@ class Main(QMainWindow):
             (4, 'Plochá fréza'),
             (2, 'Rytec'),
             (3, 'Otvory, obrys, mostíky'),
+            (5, 'Maska'),
             ('problem', 'Chyby'),
         )
         for key, label in layers:
@@ -615,6 +635,8 @@ class Main(QMainWindow):
         tools['clear'].name = 'Flat End %.3g mm' % f['t_clear']
         tools['vbit'].name = 'Engraving %g deg x %.3g mm' % (f['t_vang'], f['t_vtip'])
         tools['corn'].name = 'Corn %.3g mm' % f['t_corn']
+        tools['mask'].diameter = f['t_mask']
+        tools['mask'].name = 'Solder Mask Removal %.3g mm' % f['t_mask']
         for role in tools:  # a library tool keeps Makera's name, which Studio shows
             t = self.library.get(f['lib_' + role]) if self.library and f['lib_' + role] else None
             if t:
@@ -627,6 +649,8 @@ class Main(QMainWindow):
             copper_depth=f['depth'],
             tab_count=f['tabs'],
             full_clear=f['full'],
+            mask=f['with_mask'] and self.design is not None and self.design.mask is not None,
+            mask_depth=f['mask_depth'],
             level_step=f['level_step'],
             approach_z=f['approach_z'],
             clear_step=f['clear_pct'] / 50,  # % of the diameter -> fraction of the radius
@@ -792,7 +816,8 @@ class Main(QMainWindow):
                 return
             self.paths_[key] = files
         else:
-            fn, _ = QFileDialog.getOpenFileName(self, 'Gerber – %s' % ('meď' if key == 'copper' else 'obrys'), start)
+            what = {'copper': 'meď', 'outline': 'obrys', 'mask': 'nepájivá maska'}[key]
+            fn, _ = QFileDialog.getOpenFileName(self, 'Gerber – %s' % what, start)
             if not fn:
                 return
             self.paths_[key] = fn
@@ -810,7 +835,13 @@ class Main(QMainWindow):
             self.side_grp.button(1 if other == 'copper_top' else 0).setChecked(True)
             self.side_grp.blockSignals(False)
             side = other
-        self.paths_ = {'copper': d[side] or '', 'outline': d['outline'] or '', 'drills': list(d['drills'])}
+        mask = d['mask_top' if side == 'copper_top' else 'mask_bottom'] or ''
+        self.paths_ = {
+            'copper': d[side] or '',
+            'outline': d['outline'] or '',
+            'drills': list(d['drills']),
+            'mask': mask,
+        }
         self.load_design()
 
     def reload(self):
@@ -822,10 +853,10 @@ class Main(QMainWindow):
         p = self.paths_
         for key, lbl in self.file_lbl.items():
             names = [Path(x).name for x in ([p[key]] if isinstance(p[key], str) else p[key]) if x]
-            empty = 'žiadne (doska bez otvorov)' if key == 'drills' else 'nenájdené'
+            empty = {'drills': 'žiadne (doska bez otvorov)', 'mask': 'žiadna (bez masky)'}.get(key, 'nenájdené')
             lbl.setText(', '.join(names) if names else empty)
             lbl.setToolTip('\n'.join([p[key]] if isinstance(p[key], str) else p[key]))
-            lbl.setObjectName('FileName' if names or key == 'drills' else 'FileMissing')
+            lbl.setObjectName('FileName' if names or key in ('drills', 'mask') else 'FileMissing')
             lbl.style().unpolish(lbl)
             lbl.style().polish(lbl)
         self.design = None
@@ -836,7 +867,7 @@ class Main(QMainWindow):
         else:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
-                self.design = gerberio.load_design(p['copper'], p['outline'], p['drills'])
+                self.design = gerberio.load_design(p['copper'], p['outline'], p['drills'], p['mask'] or None)
             except UserError as e:
                 error = ('bad', str(e))
             except Exception as e:
@@ -845,6 +876,8 @@ class Main(QMainWindow):
             finally:
                 QApplication.restoreOverrideCursor()
         self.sync_stock_fields()
+        has_mask = self.design is not None and self.design.mask is not None
+        self.fields['with_mask'].setEnabled(has_mask)  # the setting is kept; it applies when a mask file is loaded
         self.invalidate()
         if error:
             self.set_banner(*error)
@@ -900,11 +933,12 @@ class Main(QMainWindow):
         if self.busy() or not self.design:
             return
         start = self.store.value('save_dir', str(Path.home()), type=str)
-        fn, _ = QFileDialog.getOpenFileName(
-            self, 'G-kód na kontrolu', start, 'G-code (*.nc *.cnc *.gcode *.ngc);;Všetko (*)'
+        fn, _ = QFileDialog.getOpenFileNames(
+            self, 'G-kód na kontrolu (pri maske oba programy)', start, 'G-code (*.nc *.cnc *.gcode *.ngc);;Všetko (*)'
         )
         if not fn:
             return
+        fn = sorted(fn)  # ..._1_... before ..._2_...
         _, prm, _, _ = self.settings()
         design = self.design
         self.start(
@@ -987,6 +1021,9 @@ class Main(QMainWindow):
             else:
                 at = ''
             info.append('Skrat spája %d ostrovy medi %s.' % (sh['islands'], at))
+        if len(r.parts) > 1:
+            info.append('2 programy: %s.' % ', '.join(
+                '%d. %s (%s)' % (n, name, hms(t)) for n, (name, t) in enumerate(r.report['part_times'], 1)))  # fmt: skip
         tools = ', '.join('T%d' % t for _, t in r.prog.events) or '—'
         line = 'Nástroje v poradí %s · odhad času %s vrátane výmen nástrojov' % (tools, hms(r.prog.total))
         if r.stock:
@@ -1049,8 +1086,9 @@ class Main(QMainWindow):
         if r:
             by_tool = {}
             for tool, pts, _zz in r.geom['paths']:
-                by_tool.setdefault(tool if tool in (2, 3, 4) else 3, []).append(pts)
-            for tool in (4, 2, 3):
+                kind = r.prog.tools[tool].kind if tool in r.prog.tools else ''
+                by_tool.setdefault(5 if kind == 'mask' else tool if tool in (2, 3, 4) else 3, []).append(pts)
+            for tool in (4, 2, 3, 5):
                 if tool in by_tool and on(tool):
                     c = QColor(LAYER[tool])
                     c.setAlpha(200)
@@ -1062,8 +1100,20 @@ class Main(QMainWindow):
                 red = LAYER['problem']
                 fill = QColor(red)
                 fill.setAlpha(150)
-                free = r.geom['uncut'] if r.expect.full_clear else r.geom['thin']
-                for g in (r.geom['copper_hit'], free, *r.geom['shorts']):
+                # only what the check counts as an error: crumbs below its limits would litter the board with red
+                res = r.res
+                shown = list(r.geom['shorts'])
+                if res['copper_hit_mm2'] >= 0.05:
+                    shown.append(r.geom['copper_hit'])
+                if r.expect.full_clear and res['noncopper_uncut_mm2'] >= 0.5:
+                    shown.append(r.geom['uncut'])
+                if not r.expect.full_clear and res['thin_strips_mm2'] >= 0.5:
+                    shown.append(r.geom['thin'])
+                if r.res.get('mask_open_pct', 100) < 95:
+                    shown.append(r.geom['mask_left'])
+                if r.res.get('mask_extra_mm2', 0) >= 0.05:
+                    shown.append(r.geom['mask_extra'])
+                for g in shown:
                     if not g.is_empty:
                         sc.addPath(poly_path(g.buffer(0.15)), QPen(red, 0), QBrush(fill))
                 for s in r.res['shorts']:
@@ -1097,17 +1147,21 @@ class Main(QMainWindow):
                 return
         folder = self.store.value('save_dir', str(Path.home()), type=str)
         default = Path(folder) / ('%s_%s.cnc' % (Path(self.paths_['copper']).stem, self.side()))
-        fn, _ = QFileDialog.getSaveFileName(self, 'Uložiť G-kód', str(default), 'G-code (*.cnc)')
+        title = 'Uložiť G-kód' if len(r.parts) == 1 else 'Uložiť G-kód (2 programy, prípona _1_… a _2_… sa pridá)'
+        fn, _ = QFileDialog.getSaveFileName(self, title, str(default), 'G-code (*.cnc)')
         if not fn:
             return
+        base = Path(fn)
+        names = [base.with_name(base.stem + suffix + (base.suffix or '.cnc')) for suffix, _ in r.parts]
         try:
-            gcode.save(r.text, fn)
+            for name, (_, text) in zip(names, r.parts):
+                gcode.save(text, name)
         except OSError as e:
             QMessageBox.warning(self, APP, 'Súbor sa nepodarilo uložiť:\n%s' % e)
             return
-        self.store.setValue('save_dir', str(Path(fn).parent))
-        self.stage.setText('Uložené: %s' % fn)
-        log.info('saved %s (%d lines, ok=%s)', fn, r.text.count('\n'), r.ok)
+        self.store.setValue('save_dir', str(base.parent))
+        self.stage.setText('Uložené: %s' % ', '.join(n.name for n in names))
+        log.info('saved %s (ok=%s)', ', '.join(map(str, names)), r.ok)
 
     def machine_guide(self):
         tools, prm, stock, _ = self.settings()
@@ -1116,6 +1170,7 @@ class Main(QMainWindow):
             3: 'kukuričná fréza Ø %s mm' % num(tools['corn'].diameter, 2),
         }
         names[2] = 'rytec %s° s hrotom %s mm' % (num(2 * tools['vbit'].half_angle, 0), num(tools['vbit'].diameter, 2))
+        names[5] = 'nástroj na masku s hrotom %s mm' % num(tools['mask'].diameter, 2)
         r = self.result
         order = [t for _, t in r.prog.events] if r and r.text else ([4, 2, 3] if prm.full_clear else [2, 3])
         steps = [
@@ -1124,10 +1179,16 @@ class Main(QMainWindow):
             'Nulový bod X0 Y0 nastav na ľavý predný roh polotovaru, Z0 na povrch medi.',
             'Nástroje v tomto poradí: ' + ', '.join('T%d %s' % (t, names.get(t, '')) for t in order) + '. '
             'Stroj si každý vypýta sám (T… M6) a po výmene zmeria jeho dĺžku. Osi musia byť pred spustením zahomované.',
-            'Výškovú mapu (autoleveling) spusti pri odoslaní úlohy z Makera Studio. '
-            'Pri G-kóde z tejto aplikácie to zatiaľ nie je overené na stroji: bez výškovej mapy izoláciu nefrézuj.',
+            'Výškovú mapu (autoleveling) spusti pri odoslaní úlohy z Makera Studio a zmeraj ňou celý polotovar: '
+            'mimo zmeranej plochy firmvér Z1 výšku nekoriguje vôbec a okraje by sa rezali v zlej hĺbke. '
+            'Meranie nezastavuj; ak sa zastaví, pred ďalším meraním stroj vypni a zapni (chyba firmvéru: sonda '
+            'by mohla prejsť po obrobku). Či Studio výškovú mapu spraví aj pri G-kóde z tejto aplikácie, zatiaľ '
+            'nie je overené na stroji: bez výškovej mapy izoláciu nefrézuj.',
             'Prvú dosku rob skúšobne a po frézovaní prezvoň susedné spoje multimetrom.',
         ]
+        if prm.mask:
+            steps.insert(4, MASK_PAUSE + ' Pred 2. programom over na stroji, ako Z1 zmeria pružiaci nástroj T5 '
+                         '(pri meraní sa hrot stlačí): zatiaľ neoverené.')  # fmt: skip
         if r and r.text:
             x0, y0, x1, y1 = self.design.board.bounds
             xs, ys = zip(*(r.frame(p) for p in ((x0, y0), (x1, y1))))

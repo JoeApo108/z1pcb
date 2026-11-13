@@ -10,11 +10,12 @@ from pathlib import Path
 FILE = 'makera_library.db'
 SHANK = 3.175
 # role -> material rows to use, in order of preference (the flat end only cuts copper, so Copper is right for it)
-MATERIALS = {'vbit': ('PCB', 'Copper'), 'clear': ('PCB', 'Copper'), 'corn': ('PCB',)}
+MATERIALS = {'vbit': ('PCB', 'Copper'), 'clear': ('PCB', 'Copper'), 'corn': ('PCB',), 'mask': ('PCB',)}
 GROUPS = {  # role -> (parent group, child groups) in Makera's tree
     'vbit': ('Engraving', ('Single Flute Metal', 'Single Flute Non Metal')),
     'clear': ('Flat End', ('Single Flute Metal', 'Single Flute Non Metal')),
     'corn': ('Flat End', ('Corn Bits',)),
+    'mask': ('Engraving', ('Solder Mask Remover',)),
 }
 CUSTOM_ROLES = {1: ('clear', 'corn'), 3: ('vbit',)}  # own tools: category 1 = flat end, 3 = engraving
 
@@ -23,7 +24,7 @@ CUSTOM_ROLES = {1: ('clear', 'corn'), 3: ('vbit',)}  # own tools: category 1 = f
 class LibTool:
     key: str
     name: str
-    role: str  # 'vbit', 'clear' or 'corn'
+    role: str  # 'vbit', 'clear', 'corn' or 'mask'
     diameter: float  # flat / corn: cutting diameter; vbit: tip diameter
     half_angle: float
     rpm: int
@@ -123,9 +124,9 @@ def make(c, role, props, custom):
         return []
     tip = num(c.get('cutterTipDiameter')) or num(c.get('cutterMaxDiameter'))
     half = num(c.get('cutterHalfAngle'))
-    if role == 'vbit' and not (0 < tip <= 0.5 and half > 0):
+    if role in ('vbit', 'mask') and not (0 < tip <= 0.5 and half > 0):
         return []
-    if role != 'vbit' and not 0.3 <= tip <= SHANK:
+    if role in ('clear', 'corn') and not 0.3 <= tip <= SHANK:
         return []
     return [
         LibTool(
@@ -133,7 +134,7 @@ def make(c, role, props, custom):
             name=c['cutterName'],
             role=role,
             diameter=tip,
-            half_angle=half if role == 'vbit' else 0.0,
+            half_angle=half if role in ('vbit', 'mask') else 0.0,
             rpm=int(num(row.get('spindleSpeed'))),
             feed=int(num(row.get('feedRate'))),
             plunge=int(num(row.get('plungeFeedRate'))),

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from shapely import LineString, MultiLineString, Point, Polygon, unary_union
 
+from .errors import UserError
 from .geom import MIN_STRIP, as_polys, strips
 from .gerberio import hole_geom
 from .tool import Tool
@@ -19,6 +20,7 @@ def default_tools():
         'clear': Tool(4, 'Flat End 2 mm (metal)', 'flat', 2.0, rpm=12000, feed=300, plunge=100),
         'vbit': Tool(2, 'Engraving 30deg x 0.2 mm (metal)', 'vbit', 0.2, 15.0, rpm=12000, feed=500, plunge=200),
         'corn': Tool(3, 'Corn 0.8 mm', 'flat', 0.8, rpm=12000, feed=500, plunge=300),
+        'mask': Tool(5, 'Solder Mask Removal 0.3 mm', 'mask', 0.3, 15.0, rpm=6000, feed=400, plunge=200),
     }
 
 
@@ -44,6 +46,9 @@ class Params:
     clearance_z: float = 15.0
     full_clear: bool = True  # remove every non-copper area (needed for mains clearance)
     min_strip: float = 1.2 * MIN_STRIP  # isolation only: free copper strips narrower than this are milled away
+    mask: bool = False  # solder mask: second program opens the pads, then holes and outline
+    mask_depth: float = 0.2  # into the mask; the spring of the scraper takes up the rest (Makera: 0.2)
+    mask_step: float = 0.63  # stepover of the scraper, fraction of its tip
 
 
 @dataclass
@@ -62,6 +67,7 @@ class Operation:
     name: str
     tool: Tool
     blocks: list
+    part: int = 1  # with a solder mask: 1 = copper, 2 = after the mask (opening, holes, outline)
 
 
 def reach(tools, prm):
@@ -171,7 +177,7 @@ def point_at(path, s):
     return path[-1]
 
 
-def generate(copper, board, holes, tools=None, prm=None, progress=None):
+def generate(copper, board, holes, tools=None, prm=None, progress=None, mask=None):
     """Operations in cutting order and a report (counts, tab positions, things the user should know)."""
     tools = tools or default_tools()
     prm = prm or Params()
@@ -231,6 +237,27 @@ def generate(copper, board, holes, tools=None, prm=None, progress=None):
         ops.append(Operation('Isolation + rest', t_vbit, blocks))
     report['links'] = links
 
+    # --- solder mask: a second program scrapes the mask off the pads, before anything is drilled
+    after = 1
+    if prm.mask:
+        if mask is None or mask.is_empty:
+            raise UserError('Režim s maskou potrebuje súbor nepájivej masky tejto strany.')
+        t_mask = tools['mask']
+        rm = t_mask.diameter / 2
+        say('mask', 80)
+        drilled = hole_geom(holes, t_corn.diameter).buffer(-0.05, quad_segs=CQ)  # comes out with the drilling anyway
+        centre = mask.difference(drilled).buffer(-rm, quad_segs=CQ)  # the scraper stays inside the openings
+        loops = pocket(centre, prm.mask_step * t_mask.diameter)
+        for q in as_polys(mask.difference(drilled)):  # openings smaller than the tip get one touch in the middle
+            x0, y0, x1, y1 = q.bounds
+            if max(x1 - x0, y1 - y0) <= t_mask.diameter + 0.05 and not centre.intersects(q):
+                c = q.representative_point()
+                loops.append([(c.x, c.y), (c.x, c.y)])
+        blocks = [Block('path', lp, z=-prm.mask_depth) for lp in order_paths(loops)]
+        ops.append(Operation('Solder mask opening', t_mask, blocks, part=2))
+        report['mask_loops'] = len(blocks)
+        after = 2
+
     # --- holes and slots with the corn bit
     say('holes', 85)
     zt = -(prm.thickness + prm.through_extra)
@@ -273,7 +300,7 @@ def generate(copper, board, holes, tools=None, prm=None, progress=None):
     for q in order:
         blocks.append(Block('levels', by_start[q[0]].pop(), levels=levels))
     if blocks:
-        ops.append(Operation('Holes and slots', t_corn, blocks))
+        ops.append(Operation('Holes and slots', t_corn, blocks, part=after))
     small = sorted(d for x, y, d, _ in holes.round if d < t_corn.diameter - 0.05)
     small += sorted(d for *_, d, _ in holes.slots if d < t_corn.diameter - 0.05)
 
@@ -296,7 +323,7 @@ def generate(copper, board, holes, tools=None, prm=None, progress=None):
     ]
     tab_top = -(prm.thickness - prm.tab_height)
     blocks.append(Block('levels', outer, levels=levels, tabs=tabs, tab_top=tab_top))
-    ops.append(Operation('Cutouts and outline', t_corn, blocks))
+    ops.append(Operation('Cutouts and outline', t_corn, blocks, part=after))
     report.update(
         levels=levels,
         holes=len(holes.round),

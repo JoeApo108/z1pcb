@@ -61,6 +61,8 @@ class Material:
         if min(za, zb) >= 0:
             return
         tl = self.prog.tools[tool]
+        if tl.kind == 'mask':  # spring-loaded: takes only the solder mask, which the map does not show
+            return
         reach = tl.radius_at(-min(za, zb)) + self.res
         x0, x1 = min(a[0], b[0]) - reach, max(a[0], b[0]) + reach
         y0, y1 = min(a[1], b[1]) - reach, max(a[1], b[1]) + reach

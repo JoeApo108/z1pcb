@@ -21,6 +21,11 @@ from .canvas import View
 from .fmt import hms, num
 from .widgets import Combo
 
+MASK_PAUSE = (
+    'Koniec 1. programu: očisti dosku, nanes UV masku a vytvrď ju (doska ostáva prilepená). '
+    'Potom 2. program: vlož nástroj na masku T5.'
+)
+
 SPEEDS = [('1×', 1), ('10×', 10), ('50×', 50), ('200×', 200), ('1000×', 1000), ('Max', 0)]
 MAX_MOVES_PER_TICK = 2500
 COPPER = QColor(205, 140, 70)
@@ -226,6 +231,9 @@ class SimPanel(QWidget):
     def show_change(self, ev):
         tl = self.prog.tools.get(ev[1])
         name = tl.name if tl and tl.name else 'T%d' % ev[1]
+        if tl and tl.kind == 'mask':
+            self.info.setText('%s  ·  %s' % (hms(ev[0]), MASK_PAUSE))
+            return
         self.info.setText(
             '%s  ·  T%d %s – vlož nástroj, stroj potom sám zmeria jeho dĺžku (≈ %d s).'
             % (hms(ev[0]), ev[1], name, gparse.TOOLCHANGE_S)

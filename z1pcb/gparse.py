@@ -10,7 +10,8 @@ from .tool import Tool
 
 RAPID_XY, RAPID_Z = 1200.0, 600.0  # mm/min, Z1 firmware config (configZ1.default)
 TOOLCHANGE_S = 60.0  # manual swap + automatic tool length measurement (estimate)
-SPINDLE_S = 3.0  # spindle spin-up after M3 (estimate)
+SPINDLE_ON_S, SPINDLE_OFF_S = 8.0, 4.0  # the firmware waits this long after M3 / M5 (configZ1.default)
+ACCEL = 150.0  # mm/s^2 on every axis (configZ1.default: acceleration 150, no separate Z value)
 ARC_TOL = 0.005  # chord error when an arc is cut into straight moves, mm
 START_Z = 15.0
 
@@ -45,6 +46,13 @@ class Program:
 
 def fields(line):
     return dict(a.split('=', 1) for a in line.split('|')[2:] if '=' in a)
+
+
+def rest_to_rest(length, vmax, accel=ACCEL):
+    """Time for a move that starts and ends at standstill: trapezoid, or triangle when too short for vmax."""
+    if length * accel < vmax * vmax:
+        return 2 * math.sqrt(length / accel)
+    return length / vmax + vmax / accel
 
 
 def arc_points(x, y, z, w, clockwise, warn, lineno):
@@ -91,6 +99,9 @@ def parse_lines(lines):
             dt = max(dxy / RAPID_XY, dz / RAPID_Z) * 60
         else:
             dt = max(dxy / min(f, RAPID_XY), dz / min(f, RAPID_Z)) * 60
+        if dt > 0 and (rapid or dxy < 1e-9):  # rapids and plunges start and end at rest: add acceleration
+            length = math.hypot(dxy, dz)
+            dt = rest_to_rest(length, length / dt)
         if dt > 0:
             p0.append(a)
             p1.append(b)
@@ -142,7 +153,9 @@ def parse_lines(lines):
             events.append((t, tool))
             t += TOOLCHANGE_S
         if 3 in ms or 4 in ms:
-            t += SPINDLE_S
+            t += SPINDLE_ON_S
+        if 5 in ms:
+            t += SPINDLE_OFF_S
         if 4 in gs:  # dwell: Smoothieware takes P in ms or S in s
             t += w.get('S', 0.0) + w.get('P', 0.0) / 1000
             continue
@@ -165,6 +178,14 @@ def parse_lines(lines):
         for e in ends:
             move((x, y, z), e, mode == 0, i)
             x, y, z = e
+    if 'PARAMS' in meta:  # written over several lines (line length limit): one dict
+        merged = {}
+        for d in meta['PARAMS']:
+            merged.update(d)
+        meta['PARAMS'] = [merged]
+    for d in meta.get('MASKTOOL', []):  # our files mark the mask scraper; Studio's header cannot tell it apart
+        if int(d.get('number', -1)) in tools:
+            tools[int(d['number'])].kind = 'mask'
     arr = lambda v, dt=float: np.asarray(v, dtype=dt)
     return Program(
         arr(p0).reshape(-1, 3), arr(p1).reshape(-1, 3), arr(t0), arr(t1), arr(tl, int), arr(fd), arr(ln, int),

@@ -167,3 +167,21 @@ def test_cli_make_then_check(tmp_path, capsys):
     assert cli.main(['check', *files, '--isolation-only', '--gcode', str(out)]) == 0
     assert cli.main(['check', *files, '--gcode', str(out)]) == 1  # full clearing expected, free copper left
     assert 'RESULT: PROBLEMS' in capsys.readouterr().out
+
+
+def test_no_line_longer_than_the_z1_takes():
+    d = synth(25, 20)
+    tools, prm = cam.default_tools(), cam.Params()
+    tools['corn'].name = 'My very long custom corn bit name that goes on and on ' * 3
+    r = job.make(d, tools, prm, job.fit_stock(d.board, tools, prm))
+    assert max(map(len, r.text.splitlines())) <= gcode.MAX_LINE
+    assert set(r.prog.meta['PARAMS'][0]) >= {'copper_depth', 'mask_depth', 'hop_short'}  # split lines merged
+    assert r.prog.tools[3].name.startswith('My very long')
+
+
+def test_timing_follows_the_firmware():
+    p = gparse.parse_lines(['G0 Z1', 'G0 Z0', 'S12000 M3', 'G1 X10 F600', 'M5'])
+    dt = list(p.t1 - p.t0)
+    assert dt[1] == pytest.approx(1 / 10 + 10 / 150)  # 1 mm rapid in Z: 600 mm/min, 150 mm/s^2, from rest to rest
+    assert dt[2] == pytest.approx(1.0)  # cutting feed: no acceleration added
+    assert p.total == pytest.approx(sum(dt) + 8 + 4)  # spindle start and stop delays

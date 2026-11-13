@@ -25,6 +25,7 @@ class Expect:
     inputs: dict = None  # role -> sha256 of the design files now loaded
     copper_thickness: float = 0.035  # copper foil: a cut counts as through it 0.01 mm below
     copper_depth: float = None  # own files: the depth asked for, checked against the foil
+    mask: bool = False  # solder mask job: the pads must be scraped free, nothing else
 
 
 def cuts(prog):
@@ -79,7 +80,7 @@ def register(plunges, holes, thickness):
     return {'mx': mx, 'tx': tx, 'ty': ty, 'residual': residual}
 
 
-def check(prog, copper, board, holes, thickness=1.6, expect=None, want_geom=False):
+def check(prog, copper, board, holes, thickness=1.6, expect=None, want_geom=False, mask=None):
     expect = expect or Expect()
     missing = prog.undefined_tools()
     if missing:
@@ -97,15 +98,21 @@ def check(prog, copper, board, holes, thickness=1.6, expect=None, want_geom=Fals
     res['warnings'] = list(prog.warnings[:5])
     cu = expect.copper_thickness
     res['copper_thickness'] = cu
-    cu_cut, through = [], []
+    cu_cut, through, scraped = [], [], []
     for tool, zz, pts in polylines:
         tl = prog.tools[tool]
         g = LineString([to_g(p) for p in pts])
+        if tl.kind == 'mask':  # rides on the surface: takes the mask, not the copper
+            scraped.append(g.buffer(tl.radius_at(0), quad_segs=QS))
+            continue
         if zz <= -(cu + 0.01):
             cu_cut.append(g.buffer(tl.radius_at(min(-zz, 0.2)), quad_segs=QS))
         if zz <= -thickness + 1e-6:
             through.append(g.buffer(tl.radius_at(thickness), quad_segs=QS))
     for tool, p, zz in plunges:
+        if prog.tools[tool].kind == 'mask':
+            scraped.append(Point(to_g(p)).buffer(prog.tools[tool].radius_at(0), quad_segs=QS))
+            continue
         if zz <= -thickness + 1e-6:
             through.append(Point(to_g(p)).buffer(prog.tools[tool].radius_at(thickness), quad_segs=QS))
     cut, thr = unary_union(cu_cut), unary_union(through)
@@ -150,11 +157,23 @@ def check(prog, copper, board, holes, thickness=1.6, expect=None, want_geom=Fals
     outer = Polygon(board.exterior)
     ring = outer.buffer(0.3).difference(outer)
     res['outline_ring_pct'] = round(100 * thr.intersection(ring).area / ring.area, 1)
-    res['deepest_z'] = float(min([zz for _, zz, _ in polylines] + [zz for _, _, zz in plunges], default=0.0))
+    cutting = lambda t: prog.tools[t].kind != 'mask'
+    zs = [zz for t, zz, _ in polylines if cutting(t)] + [zz for t, _, zz in plunges if cutting(t)]
+    res['deepest_z'] = float(min(zs, default=0.0))
+    # solder mask: openings scraped free (drilled holes excepted), mask kept everywhere else
+    scr = unary_union(scraped) if scraped else Polygon()
+    bare, extra = Polygon(), Polygon()
+    if expect.mask and mask is not None:
+        need = mask.difference(hole_geom(holes, expect.min_hole_d).buffer(0.05, quad_segs=QS))
+        bare = need.difference(scr)
+        extra = scr.difference(mask.buffer(0.05, quad_segs=QS))
+        res['mask_open_pct'] = round(100 * (1 - bare.area / need.area), 1) if need.area else 100.0
+        res['mask_extra_mm2'] = round(extra.area, 3)
     if not want_geom:
         return res
     paths = [(tool, [to_g(p) for p in pts], zz) for tool, zz, pts in polylines]
     geom = {'copper_hit': hit, 'uncut': uncut, 'thin': thin, 'shorts': short_geoms, 'paths': paths}
+    geom.update(mask_left=bare, mask_extra=extra)
     return res, geom
 
 
@@ -202,6 +221,11 @@ def verdict(res, expect=None):
         same = all(expect.inputs.get(role) == digest for role, digest in res['inputs'].items())
         value = 'zhodné s načítanými' if same else 'G-kód vznikol z iných súborov'
         rows.append(('Súbory návrhu', value, state(same)))
+    if 'mask_open_pct' in res:
+        v = res['mask_open_pct']
+        rows.append(('Plôšky odkryté v maske', num(v, 1) + ' %', state(v >= 95)))
+        v = res['mask_extra_mm2']
+        rows.append(('Maska odstránená mimo otvorov', num(v, 3) + ' mm²', state(v < 0.05)))
     rows.append(('Najhlbší rez', num(res['deepest_z'], 2) + ' mm', 'info'))
     rows.append(('Rozšírenie okraja medi', 'max ' + num(res['copper_edge_widening_max_mm'], 2) + ' mm', 'info'))
     for w in res.get('warnings', []):
