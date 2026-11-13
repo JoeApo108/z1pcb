@@ -1,0 +1,6 @@
+# Windows packaging and tests there. tools/fetch_wheels.sh resolves the rest of the dependencies and locks all by hash.
+pyinstaller==6.22.3
+# Needed on Windows only. pip resolves markers for the machine it runs on (macOS), so they are named here.
+pefile==2024.8.26
+pywin32-ctypes==0.2.3
+colorama==0.4.6

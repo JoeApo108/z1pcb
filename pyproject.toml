@@ -1,0 +1,22 @@
+[project]
+name = "z1pcb"
+description = "PCB CAM for the Makera Z1: Gerber + Excellon to checked G-code"
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+[tool.setuptools.dynamic]
+version = { attr = "z1pcb.__version__" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+ignore = ["E501", "E731", "E741", "B905"]  # long strings on one line; small lambdas, l/i names and plain zip are deliberate
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
