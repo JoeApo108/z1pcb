@@ -59,20 +59,24 @@ def render(ops, place, prm, inputs=None):
     L = header(ops, place, prm, inputs)
     emit = L.append
     emit('G90 G21')
-    st = {'z': prm.clearance_z}
+    st = {'z': prm.clearance_z, 'xy': None}  # 'xy': current position in the design frame (None: unknown)
 
     def rapid_to(p):
-        """XY rapid at safe Z, then rapid down to the approach height above the stock."""
-        if st['z'] < prm.safe_z:
-            emit('G0 Z%.3f' % prm.safe_z)
-            st['z'] = prm.safe_z
+        """Rapid to above p: short hops at the approach height, longer ones at safe Z; then down to the approach."""
+        short = st['xy'] is not None and math.dist(st['xy'], p) <= prm.hop_short
+        top = prm.approach_z if short else prm.safe_z
+        if st['z'] < top:
+            emit('G0 Z%.3f' % top)
+            st['z'] = top
         emit('G0 X%.4f Y%.4f' % place(p))
         if st['z'] > prm.approach_z:
             emit('G0 Z%.3f' % prm.approach_z)
             st['z'] = prm.approach_z
+        st['xy'] = p
 
     def cut_to(p, f, z=None):
         m = place(p)
+        st['xy'] = p
         if z is None:
             emit('G1 X%.4f Y%.4f F%d' % (m[0], m[1], f))
         else:
@@ -95,13 +99,17 @@ def render(ops, place, prm, inputs=None):
             emit('T%d M6' % tl.number)
             loaded = tl.number
             st['z'] = prm.clearance_z
-            emit('G0 X%.4f Y%.4f' % place(op.blocks[0].points[0]))
+            st['xy'] = op.blocks[0].points[0]
+            emit('G0 X%.4f Y%.4f' % place(st['xy']))
             emit('S%d M3' % tl.rpm)
             emit('G0 Z%.3f' % prm.clearance_z)
         for b in op.blocks:
             if b.kind == 'path':
-                rapid_to(b.points[0])
-                plunge(b.z, tl.plunge)
+                if b.link and st['xy'] is not None and abs(st['z'] - b.z) < 1e-9:
+                    cut_to(b.points[0], tl.feed)  # straight across at depth, checked free of copper in cam.link
+                else:
+                    rapid_to(b.points[0])
+                    plunge(b.z, tl.plunge)
                 for p in b.points[1:]:
                     cut_to(p, tl.feed)
             elif b.kind == 'peck':

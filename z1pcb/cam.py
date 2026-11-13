@@ -4,12 +4,13 @@ import math
 from dataclasses import dataclass, field
 
 import numpy as np
-from shapely import LineString, MultiLineString, Polygon, unary_union
+from shapely import LineString, MultiLineString, Point, Polygon, unary_union
 
 from .geom import MIN_STRIP, as_polys, strips
 from .gerberio import hole_geom
 from .tool import Tool
 
+COPPER_DEPTH = {18: 0.05, 35: 0.07, 70: 0.10}  # copper foil (um) -> depth into it: foil + ~0.03 mm
 CQ = 16  # buffer quadrant segments for offsets (8 is slower: more vertices to merge with 16-segment pads)
 
 
@@ -24,18 +25,22 @@ def default_tools():
 @dataclass
 class Params:
     thickness: float = 1.6
+    copper_thickness: float = 0.035  # copper foil
     copper_depth: float = 0.07  # isolation / clearing depth
     through_extra: float = 0.1  # cut this far below the board (into the spoilboard)
     level_step: float = 0.3  # depth per pass for holes, slots, outline
     vbit_margin: float = 0.02  # V-bit cut edge stays this far from copper
     clear_margin: float = 0.05  # clearing cutter edge stays this far from copper
-    clear_step: float = 0.9  # stepover of the clearing cutter, as a fraction of its radius
+    clear_step: float = 1.26  # stepover of the clearing cutter as a fraction of its radius (63 % of D, Makera)
     vbit_step: float = 0.18  # stepover of the V-bit rest passes
     tab_count: int = 4
     tab_length: float = 2.8  # along the cutter path
     tab_height: float = 0.5  # material left under a tab
     safe_z: float = 2.0  # XY rapids happen here
     approach_z: float = 0.5  # rapid down to here, feed from here
+    hop_short: float = 5.0  # moves up to this long stay at the approach height instead of rising to safe_z
+    link_max: float = 5.0  # full clearing: cut straight across to the next path when it is this close and no
+    # copper to keep is in reach, instead of lifting
     clearance_z: float = 15.0
     full_clear: bool = True  # remove every non-copper area (needed for mains clearance)
     min_strip: float = 1.2 * MIN_STRIP  # isolation only: free copper strips narrower than this are milled away
@@ -49,6 +54,7 @@ class Block:  # one cutting primitive
     levels: list = field(default_factory=list)
     tabs: list = field(default_factory=list)  # (s0, s1) along path, for 'levels'
     tab_top: float = 0.0
+    link: bool = False  # reached from the previous block by cutting straight across at depth
 
 
 @dataclass
@@ -105,6 +111,20 @@ def strip_passes(region):
                 loops += rings(mid)
                 break
     return loops
+
+
+def link(blocks, keep, r, max_len):
+    """Mark blocks to be reached from the previous one by cutting across instead of lifting: the hop is short
+    and the cutter on that line stays clear of the copper to keep. Returns how many were marked."""
+    n = 0
+    for a, b in zip(blocks, blocks[1:]):
+        p, q = a.points[-1], b.points[0]
+        if math.dist(p, q) > max_len:
+            continue
+        line = LineString([p, q]) if math.dist(p, q) > 1e-9 else Point(p)
+        b.link = not line.buffer(r, quad_segs=8).intersects(keep)
+        n += b.link
+    return n
 
 
 def sweep(loops, r):
@@ -199,12 +219,17 @@ def generate(copper, board, holes, tools=None, prm=None, progress=None):
             v_rest += strip_passes(thin.buffer(rv, quad_segs=CQ).intersection(allowed))
     report.update(clear_loops=len(t4_loops), iso_loops=len(iso), rest_loops=len(v_rest), rest_area=rest_area)
 
-    ops = []
+    ops, links = [], 0
     if t4_loops:
-        ops.append(Operation('Copper clearing', t_clear, [Block('path', lp, z=zc) for lp in order_paths(t4_loops)]))
+        blocks = [Block('path', lp, z=zc) for lp in order_paths(t4_loops)]
+        links += link(blocks, copper.buffer(prm.clear_margin - 0.01, quad_segs=CQ), r4, prm.link_max)
+        ops.append(Operation('Copper clearing', t_clear, blocks))
     if iso or v_rest:
         blocks = [Block('path', lp, z=zc) for lp in order_paths(iso + v_rest)]
+        if prm.full_clear:  # isolation only: a cut across free copper could leave a strip too thin to hold
+            links += link(blocks, copper.buffer(prm.vbit_margin - 0.01, quad_segs=CQ), rv, prm.link_max)
         ops.append(Operation('Isolation + rest', t_vbit, blocks))
+    report['links'] = links
 
     # --- holes and slots with the corn bit
     say('holes', 85)

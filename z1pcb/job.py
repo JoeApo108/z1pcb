@@ -70,18 +70,20 @@ def make(design, tools, prm, stock, side='bottom', anchor='center', progress=Non
         small_holes=report['small_holes'],
         narrow_cutouts=report['narrow_cutouts'],
         inputs=design.hashes,
+        copper_thickness=prm.copper_thickness,
+        copper_depth=prm.copper_depth,
     )
     res, geom = checks.check(prog, design.copper, design.board, design.holes, prm.thickness, expect, want_geom=True)
     rows, ok = checks.verdict(res, expect)
     return Result(design, prog, res, geom, rows, ok, expect, place, tuple(stock), text=text, report=report)
 
 
-def check_file(design, path, thickness=1.6, full_clear=True, progress=None):
+def check_file(design, path, thickness=1.6, full_clear=True, copper_thickness=0.035, progress=None):
     say = progress or (lambda stage, pct: None)
     say('parse', 10)
     prog = gparse.parse(path)
     say('check', 30)
-    expect = checks.Expect(full_clear=full_clear, inputs=design.hashes)
+    expect = checks.Expect(full_clear=full_clear, inputs=design.hashes, copper_thickness=copper_thickness)
     res, geom = checks.check(prog, design.copper, design.board, design.holes, thickness, expect, want_geom=True)
     rows, ok = checks.verdict(res, expect)
     stock = prog.stock[:2] if prog.stock else None

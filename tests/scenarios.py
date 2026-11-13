@@ -7,6 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ['Z1PCB_SETTINGS'] = str(Path(tempfile.mkdtemp()) / 'settings.ini')
+os.environ['Z1PCB_MAKERA_DB'] = str(Path(tempfile.mkdtemp()) / 'none.db')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402

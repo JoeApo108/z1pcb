@@ -89,6 +89,14 @@ def test_cutout_narrower_than_cutter_fails():
     assert not r.ok and row(r, 'Výrezy užšie než fréza')[1] == 'bad'
 
 
+def test_thick_copper_needs_a_deeper_cut():
+    d = synth(25, 20)
+    shallow = make(d, copper_thickness=0.07, copper_depth=0.07)
+    assert not shallow.ok and row(shallow, 'Hĺbka rezu do medi')[1] == 'bad'
+    deep = make(d, copper_thickness=0.07, copper_depth=cam.COPPER_DEPTH[70])
+    assert deep.ok, deep.rows
+
+
 def test_stock_too_small():
     d = synth(25, 20)
     with pytest.raises(UserError, match='nezmestí'):

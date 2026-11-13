@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import DATA
+from conftest import DATA, fake_makera_db
 from PySide6.QtCore import QLocale, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractSlider, QApplication, QFileDialog, QMessageBox
@@ -104,6 +104,14 @@ def test_settings_survive_a_restart(app, win):
     again.close()
 
 
+def test_copper_foil_sets_the_depth(app, win):
+    win.fields['copper_um'].setCurrentIndex(win.fields['copper_um'].findData('70'))
+    assert win.fields['depth'].value() == pytest.approx(0.10) and win.result is None
+    again = gui.Main()
+    assert again.fields['copper_um'].currentData() == '70' and again.fields['depth'].value() == pytest.approx(0.10)
+    again.close()
+
+
 def test_board_without_drill_file(win):
     win.apply_detect([f for f in FILES if not f.endswith('.drl')])
     assert win.design and len(win.design.holes.round) == 0 and win.run_btn.isEnabled()
@@ -162,3 +170,40 @@ def test_no_abort(name):
         [sys.executable, str(Path(__file__).parent / 'scenarios.py'), name], capture_output=True, timeout=300
     )
     assert p.returncode == 0, p.stderr.decode()[-500:]
+
+
+def test_library_tool_fills_size_and_cutting_data(app, tmp_path, monkeypatch):
+    monkeypatch.setenv('Z1PCB_SETTINGS', str(tmp_path / 'settings.ini'))
+    monkeypatch.setenv('Z1PCB_MAKERA_DB', str(fake_makera_db(tmp_path / 'lib.db')))
+    w = gui.Main()
+    f = w.fields
+    assert f['lib_vbit'].currentData() == 'vbit:v2' and f['lib_corn'].currentData() == 'corn:c8'  # defaults recognised
+    f['lib_corn'].setCurrentIndex(f['lib_corn'].findData('corn:c6'))
+    assert (f['t_corn'].value(), f['feed_corn'].value(), f['plunge_corn'].value()) == (0.6, 450, 250)
+    assert f['level_step'].value() == pytest.approx(0.25)
+    tools, prm, _, _ = w.settings()
+    assert tools['corn'].name == '3.175*0.6*3mm Corn' and prm.level_step == pytest.approx(0.25)
+    f['feed_corn'].setValue(400)  # changed by hand: no longer the library tool
+    assert f['lib_corn'].currentData() == '' and w.settings()[0]['corn'].name == 'Corn 0.6 mm'
+    f['lib_clear'].setCurrentIndex(f['lib_clear'].findData('clear:{own}'))
+    assert (f['t_clear'].value(), f['rpm_clear'].value(), f['clear_pct'].value()) == (1.0, 11000, 60)
+    assert w.settings()[1].clear_step == pytest.approx(1.2)
+    w.close()
+
+
+def test_without_makera_studio_values_are_typed_by_hand(win):
+    assert not win.fields['lib_corn'].isEnabled() and win.fields['lib_corn'].count() == 1
+    assert win.settings()[0]['corn'].name == 'Corn 0.8 mm'
+
+
+def test_qt_dialog_buttons_in_slovak(app):
+    from PySide6.QtWidgets import QMessageBox
+
+    assert gui.install_qt_translation(app)
+    box = QMessageBox()
+    box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+    assert box.button(QMessageBox.Yes).text().replace('&', '') == 'Áno'
+    assert box.button(QMessageBox.No).text().replace('&', '') == 'Nie'
+    from PySide6.QtCore import QCoreApplication
+
+    assert QCoreApplication.translate('QMessageBox', 'Show Details...').startswith('Zobraziť')  # Qt's own Slovak file

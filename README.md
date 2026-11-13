@@ -7,6 +7,18 @@ It can also check G-code made by Makera Studio.
 One board side per job. Double-sided boards are not supported (no alignment after flipping the board).
 The user interface is in Slovak.
 
+![Toolpaths and the check of the result](docs/screenshot.png)
+
+![Simulation of the G-code on the Z1](docs/simulation.png)
+
+- **Input:** a folder of Gerber + Excellon files from any PCB program; layers are recognised by their X2
+  attributes or names. Open or foreign outlines are reported with the place of the gap.
+- **Tools:** with Makera Studio installed, its tool library is read and picking a tool fills in its size and
+  Makera's cutting data. Copper foil 18 / 35 / 70 µm sets the depth of cut.
+- **Check:** copper damage, shorts, free copper left, holes, cutouts and outline, and whether the G-code was
+  made from the design files now loaded. Works for Makera Studio's G-code too.
+- **Simulation:** material removal on the machine's timeline, tool changes, time estimate from the Z1's axis limits.
+
 ## Installation (Windows 10/11)
 
 Download `Z1PCB-x.y.z-setup.exe` from the [releases](https://github.com/JoeApo108/z1pcb-releases/releases/latest)
@@ -44,6 +56,7 @@ Not yet verified on the machine: the height map (autoleveling) with G-code from 
 | `checks` | check of a G-code file against the design, verdict |
 | `sim` | material height map |
 | `job` | "make" and "check a file", shared by the window and the command line |
+| `makera_lib` | reads Makera Studio's tool library (read-only), if installed |
 | `updates` | updates: only an installer with a valid release signature |
 | `gui`, `gui_sim`, `widgets`, `theme`, `canvas` | window |
 

@@ -81,3 +81,16 @@ Stav: 60 testov na Macu aj na Windows 11 (VM), build 0.3.0 z wheelov zamknutých
 - [x] README a komentáre v kóde po anglicky
 - [ ] Záloha podpisového kľúča mimo tohto Macu (bez neho sa nainštalované kópie samy neaktualizujú)
 - [ ] Gerbery z EasyEDA/Altium/Eagle: skutočné exporty do testov
+
+## Fáza 6 — čas frézovania a hrúbka medi (0.3.2)
+- [x] Krátke presuny (do 5 mm) vo výške priblíženia 0,5 mm, dlhé na 2 mm
+- [x] Pri čistení všetkej medi: susedné dráhy do 5 mm sa spoja rezom naprieč, ak fréza na spojnici nezasiahne meď (`cam.link`); IR doska 746 spojení
+- [x] Krok plochej frézy 63 % (Makera); IR doska 46,9 → 37,7 min, bez čistenia 26,5 → 24,6 min
+- [x] Hrúbka medi 18 / 35 / 70 µm: nastaví hĺbku (0,05 / 0,07 / 0,10), kontrola počíta rez cez meď až 0,01 mm pod fóliou a hlási príliš plytkú hĺbku
+- [x] Hodnoty rezania overené proti knižnici Makera Studio (`makera_library.db`); pre pertinax Makera nemá hodnoty kukuričnej frézy, voľba podkladu preto nie je
+- [x] Knižnica Makera Studio v aplikácii (`makera_lib`): výber nástroja pre T4/T2/T3 nastaví priemer, uhol, otáčky, posuv, zanorenie, hĺbku na prechod a krok; ručná zmena hodnoty prepne na „Vlastné hodnoty“; bez Studia ručné zadanie. Cesta na Windows neoverená (hľadá sa v %APPDATA% a %LOCALAPPDATA%)
+- [x] Krok plochej frézy v Rezných podmienkach (%)
+- [x] Tlačidlá dialógov po slovensky (Qt preklad + vlastné texty pre QPlatformTheme, ktoré slovenský preklad Qt nemá); samotest zlyhá, ak sa preklad Qt nenačíta
+- [x] README: screenshoty (`docs/`), zoznam funkcií
+- [ ] Čistenie len vo vybranej zóne (napr. pásmo 230 V) — čaká na súhlas
+- [ ] `M495` (výšková mapa) v súbore, predvolene vypnuté — čaká na súhlas

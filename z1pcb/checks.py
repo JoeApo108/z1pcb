@@ -12,8 +12,6 @@ from .fmt import num
 from .geom import MIN_STRIP, QS, as_polys, strips
 from .gerberio import hole_geom
 
-CU_THICK = 0.035
-
 
 @dataclass
 class Expect:
@@ -25,6 +23,8 @@ class Expect:
     small_holes: list = field(default_factory=list)  # diameters of those holes
     narrow_cutouts: int = 0  # cutouts narrower than the cutter (not made)
     inputs: dict = None  # role -> sha256 of the design files now loaded
+    copper_thickness: float = 0.035  # copper foil: a cut counts as through it 0.01 mm below
+    copper_depth: float = None  # own files: the depth asked for, checked against the foil
 
 
 def cuts(prog):
@@ -95,11 +95,13 @@ def check(prog, copper, board, holes, thickness=1.6, expect=None, want_geom=Fals
     res['drill_residual_mm'] = round(reg.get('residual', 0.0), 4)
     res['inputs'] = {d['role']: d.get('sha256') for d in prog.meta.get('INPUT', []) if 'role' in d}
     res['warnings'] = list(prog.warnings[:5])
+    cu = expect.copper_thickness
+    res['copper_thickness'] = cu
     cu_cut, through = [], []
     for tool, zz, pts in polylines:
         tl = prog.tools[tool]
         g = LineString([to_g(p) for p in pts])
-        if zz <= -CU_THICK:
+        if zz <= -(cu + 0.01):
             cu_cut.append(g.buffer(tl.radius_at(min(-zz, 0.2)), quad_segs=QS))
         if zz <= -thickness + 1e-6:
             through.append(g.buffer(tl.radius_at(thickness), quad_segs=QS))
@@ -160,7 +162,12 @@ def verdict(res, expect=None):
     """Rows (label, value, state) for the user and the overall result. state: ok / bad / warn / info."""
     expect = expect or Expect()
     state = lambda good: 'ok' if good else 'bad'
-    rows = [
+    rows = []
+    if expect.copper_depth is not None:
+        depth, cu = expect.copper_depth, expect.copper_thickness
+        value = '%s mm pri medi %s mm' % (num(depth, 3), num(cu, 3))
+        rows.append(('Hĺbka rezu do medi', value, state(depth >= cu + 0.02)))
+    rows += [
         ('Zásah do medi mimo otvorov', num(res['copper_hit_mm2'], 3) + ' mm²', state(res['copper_hit_mm2'] < 0.05)),
         ('Skraty medzi spojmi', str(len(res['shorts'])), state(not res['shorts'])),
     ]

@@ -23,11 +23,12 @@ def main(argv=None):
         p.add_argument('--drill', nargs='*', default=[], help='Excellon file(s); none for a board without holes')
         p.add_argument('--thickness', type=float, default=1.6)
         p.add_argument('--isolation-only', action='store_true', help='leave free copper, only isolate the nets')
+        p.add_argument('--copper-um', type=int, choices=sorted(cam.COPPER_DEPTH), default=35, help='copper foil')
         if name == 'make':
             p.add_argument('--side', choices=('bottom', 'top'), default='bottom')
             p.add_argument('--stock', type=stock_arg, help='e.g. 160x60; default: the smallest that fits')
             p.add_argument('--anchor', choices=gcode.PLACEMENTS, default='center')
-            p.add_argument('--depth', type=float, default=0.07, help='depth into the copper side, mm')
+            p.add_argument('--depth', type=float, help='depth into the copper side, mm; default from --copper-um')
             p.add_argument('--tabs', type=int, default=4)
             p.add_argument('-o', '--out', required=True)
         else:
@@ -38,7 +39,11 @@ def main(argv=None):
         if a.cmd == 'make':
             tools = cam.default_tools()
             prm = cam.Params(
-                thickness=a.thickness, copper_depth=a.depth, tab_count=a.tabs, full_clear=not a.isolation_only
+                thickness=a.thickness,
+                copper_thickness=a.copper_um / 1000,
+                copper_depth=a.depth or cam.COPPER_DEPTH[a.copper_um],
+                tab_count=a.tabs,
+                full_clear=not a.isolation_only,
             )
             stock = a.stock or job.fit_stock(design.board, tools, prm)
             r = job.make(design, tools, prm, stock, a.side, a.anchor)
@@ -48,7 +53,7 @@ def main(argv=None):
                 % (*stock, ', T'.join(map(str, r.prog.used_tools())), hms(r.prog.total))
             )
         else:
-            r = job.check_file(design, a.gcode, a.thickness, not a.isolation_only)
+            r = job.check_file(design, a.gcode, a.thickness, not a.isolation_only, a.copper_um / 1000)
     except UserError as e:
         print('ERROR:', e)
         return 2

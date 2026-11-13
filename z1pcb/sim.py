@@ -26,6 +26,8 @@ class Material:
     def __init__(self, prog, res=RES):
         self.prog, self.res = prog, res
         self.thick = prog.stock[2] if prog.stock else 1.6
+        params = (prog.meta.get('PARAMS') or [{}])[0]  # our files record the copper foil
+        self.cu = float(params.get('copper_thickness', CU))
         zmin = np.minimum(prog.p0[:, 2], prog.p1[:, 2]) if len(prog.p0) else np.zeros(0)
         self.cut = zmin < 0  # only moves below the surface remove material
         if self.cut.any():
@@ -127,7 +129,7 @@ class Material:
         img = np.empty(h.shape + (3,), np.float32)
         depth = np.clip(-h / self.thick, 0, 1)[..., None]
         img[:] = np.array([196, 190, 140], np.float32) * (1 - 0.35 * depth)  # FR4, darker with depth
-        img[h > -CU + 1e-4] = (205, 140, 70)  # copper
+        img[h > -self.cu + 1e-4] = (205, 140, 70)  # copper
         img[h <= -self.thick + 1e-3] = (40, 44, 50)  # cut through
         img *= shade[..., None]
         return np.clip(img, 0, 255).astype(np.uint8)

@@ -30,7 +30,7 @@ def test_full_clear(ir_full):
 def test_isolation_only_removes_thin_strips(ir):
     r = job.make(ir, cam.default_tools(), cam.Params(full_clear=False), (160, 60))
     assert r.ok, r.rows
-    assert r.prog.used_tools() == [2, 3]
+    assert r.prog.used_tools() == [2, 3] and r.report['links'] == 0  # no cuts across free copper in this mode
     assert r.res['thin_strips_mm2'] < 0.5 and r.res['shorts'] == []
     assert r.res['noncopper_uncut_mm2'] > 1000  # free copper stays
 
@@ -54,3 +54,11 @@ def test_studio_export_defects(ir):
     assert r.res['registration'] == 'drills' and r.res['drill_residual_mm'] < 0.01
     assert len(r.res['shorts']) == 1 and r.res['shorts'][0]['islands'] == 11  # GND + U1 pins 21-30 not isolated
     assert r.res['cutouts_pct'] == [0.0] * 4  # relay slots not cut
+
+
+def test_short_hops_stay_low_and_nearby_paths_are_joined(ir, ir_full):
+    old = job.make(ir, cam.default_tools(), cam.Params(clear_step=0.9, hop_short=0, link_max=0), (160, 60))
+    assert ir_full.prog.total < 0.85 * old.prog.total
+    assert ir_full.report['links'] > 500
+    lifts = lambda r: r.text.count('G0 Z2.000')
+    assert lifts(ir_full) < 0.2 * lifts(old)

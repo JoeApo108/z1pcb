@@ -8,7 +8,21 @@ import traceback
 import urllib.error
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, QObject, QPointF, QRectF, QSettings, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QLibraryInfo,
+    QLocale,
+    QObject,
+    QPointF,
+    QRectF,
+    QSettings,
+    Qt,
+    QThread,
+    QTimer,
+    QTranslator,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QIcon, QKeySequence, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -37,7 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__ as VERSION
-from . import applog, cam, gcode, gerberio, job, updates
+from . import applog, cam, gcode, gerberio, job, makera_lib, updates
 from .applog import log
 from .canvas import View
 from .errors import UserError
@@ -61,6 +75,12 @@ STAGES = {
 STATE_TEXT = {'ok': 'v poriadku', 'bad': 'chyba', 'warn': 'pozor', 'info': 'info'}
 STATE_COLOR = {'ok': C['ok'], 'bad': C['bad'], 'warn': C['warn'], 'info': C['muted']}
 ANCHORS = (('center', 'V strede polotovaru'), ('corner', 'V ľavom prednom rohu'))
+ROLES = (('clear', 'T4', 'Plochá fréza'), ('vbit', 'T2', 'Rytec – hrot'), ('corn', 'T3', 'Kukuričná fréza'))
+ROLE_FIELDS = {  # fields a library tool fills in; editing one of them by hand means 'own values' again
+    'clear': ('t_clear', 'feed_clear', 'plunge_clear', 'rpm_clear', 'clear_pct'),
+    'vbit': ('t_vtip', 't_vang', 'feed_vbit', 'plunge_vbit', 'rpm_vbit'),
+    'corn': ('t_corn', 'feed_corn', 'plunge_corn', 'rpm_corn', 'level_step'),
+}
 
 
 # ---------- background work
@@ -264,35 +284,77 @@ class Main(QMainWindow):
 
         sv.addWidget(section('Nástroje'))
         box, g = card()
-        rows = (
-            ('T4', 'Plochá fréza', self.add_field('t_clear', spin(tools['clear'].diameter, 0.5, 3.175, 2, ' mm', 0.1))),
-            ('T2', 'Rytec – hrot', self.add_field('t_vtip', spin(tools['vbit'].diameter, 0.05, 0.5, 2, ' mm', 0.05))),
-            ('', 'Rytec – uhol', self.add_field('t_vang', spin(2 * tools['vbit'].half_angle, 10, 90, 0, ' °', 5))),
-            ('T3', 'Kukuričná fréza', self.add_field('t_corn', spin(tools['corn'].diameter, 0.4, 2.0, 2, ' mm', 0.1))),
-        )
-        for r, (number, label, w) in enumerate(rows):
+        self.library = makera_lib.load()
+        size = {
+            'clear': self.add_field('t_clear', spin(tools['clear'].diameter, 0.5, 3.175, 2, ' mm', 0.1)),
+            'vbit': self.add_field('t_vtip', spin(tools['vbit'].diameter, 0.05, 0.5, 2, ' mm', 0.05)),
+            'corn': self.add_field('t_corn', spin(tools['corn'].diameter, 0.3, 3.175, 2, ' mm', 0.1)),
+        }
+        row = 0
+        for role, number, label in ROLES:
             n = QLabel(number)
             n.setObjectName('Hint')
-            g.addWidget(n, r, 0)
-            g.addWidget(QLabel(label), r, 1)
-            g.addWidget(w, r, 2, Qt.AlignRight)
+            pick = self.add_field('lib_' + role, Combo())
+            pick.setFocusPolicy(Qt.StrongFocus)
+            pick.setSizeAdjustPolicy(Combo.AdjustToMinimumContentsLengthWithIcon)
+            pick.setMinimumContentsLength(10)
+            pick.addItem('Vlastné hodnoty', '')
+            for t in self.library.for_role(role) if self.library else []:
+                pick.addItem(t.label(), t.key)
+                tip = '%s\n%s · %d ot./min · posuv %d · zanorenie %d mm/min' % (
+                    t.name,
+                    t.material,
+                    t.rpm,
+                    t.feed,
+                    t.plunge,
+                )
+                pick.setItemData(pick.count() - 1, tip, Qt.ToolTipRole)
+            pick.setEnabled(self.library is not None)
+            g.addWidget(n, row, 0)
+            g.addWidget(QLabel(label), row, 1)
+            g.addWidget(size[role], row, 2, Qt.AlignRight)
+            row += 1
+            if role == 'vbit':
+                g.addWidget(QLabel('Rytec – uhol'), row, 1)
+                angle = self.add_field('t_vang', spin(2 * tools['vbit'].half_angle, 10, 90, 0, ' °', 5))
+                g.addWidget(angle, row, 2, Qt.AlignRight)
+                row += 1
+            g.addWidget(pick, row, 1, 1, 2)  # full width: Makera's names are long
+            row += 1
+        if self.library:
+            text = (
+                'Knižnica Makera Studio (%s): výber nástroja nastaví jeho priemer a rezné podmienky.'
+                % self.library.updated
+            )
+        else:
+            text = 'Makera Studio sa na tomto počítači nenašlo: rozmery a rezné podmienky zadaj ručne.'
+        g.addWidget(hint(text), row, 0, 1, 3)
         g.setColumnStretch(1, 1)
         sv.addWidget(box)
 
         sv.addWidget(section('Frézovanie'))
         box, g = card()
-        g.addWidget(QLabel('Hĺbka do medi'), 0, 0)
-        g.addWidget(self.add_field('depth', spin(prm.copper_depth, 0.04, 0.2, 3, ' mm', 0.01)), 0, 1, Qt.AlignRight)
-        g.addWidget(QLabel('Mostíky obrysu'), 1, 0)
-        g.addWidget(self.add_field('tabs', ispin(prm.tab_count, 0, 12)), 1, 1, Qt.AlignRight)
+        copper = self.add_field('copper_um', Combo())
+        copper.setFocusPolicy(Qt.StrongFocus)
+        for um in sorted(cam.COPPER_DEPTH):
+            copper.addItem('%d µm' % um, str(um))
+        copper.setCurrentIndex(copper.findData('35'))
+        copper.setFixedWidth(110)
+        g.addWidget(QLabel('Hrúbka medi'), 0, 0)
+        g.addWidget(copper, 0, 1, Qt.AlignRight)
+        g.addWidget(QLabel('Hĺbka do medi'), 1, 0)
+        g.addWidget(self.add_field('depth', spin(prm.copper_depth, 0.04, 0.2, 3, ' mm', 0.01)), 1, 1, Qt.AlignRight)
+        g.addWidget(hint('Hĺbka sa nastaví podľa hrúbky medi (meď + ~0,03 mm), dá sa zmeniť.'), 2, 0, 1, 2)
+        g.addWidget(QLabel('Mostíky obrysu'), 3, 0)
+        g.addWidget(self.add_field('tabs', ispin(prm.tab_count, 0, 12)), 3, 1, Qt.AlignRight)
         full = self.add_field('full', QCheckBox('Odstrániť všetku voľnú meď'))
         full.setChecked(True)
-        g.addWidget(full, 2, 0, 1, 2)
+        g.addWidget(full, 4, 0, 1, 2)
         text = (
             'Nutné pri doskách so sieťovým napätím: ostrovčeky medi medzi spojmi skracujú izolačnú vzdialenosť. '
             'Vypnuté: izolačná drážka okolo spojov a odstránenie úzkych pásikov medi, bez plochej frézy.'
         )
-        g.addWidget(hint(text), 3, 0, 1, 2)
+        g.addWidget(hint(text), 5, 0, 1, 2)
         sv.addWidget(box)
 
         self.adv_btn = QToolButton()
@@ -315,11 +377,17 @@ class Main(QMainWindow):
         g.addWidget(QLabel('Hĺbka na prechod'), 5, 0, 1, 2)
         w = self.add_field('level_step', spin(prm.level_step, 0.1, 1.0, 2, ' mm', 0.05, width=78))
         g.addWidget(w, 5, 3, Qt.AlignRight)
-        g.addWidget(QLabel('Výška priblíženia'), 6, 0, 1, 2)
-        w = self.add_field('approach_z', spin(prm.approach_z, 0.2, 2.0, 2, ' mm', 0.1, width=78))
+        g.addWidget(QLabel('Krok plochej frézy'), 6, 0, 1, 2)
+        w = self.add_field('clear_pct', spin(prm.clear_step * 50, 20, 90, 0, ' %', 5, width=78))
         g.addWidget(w, 6, 3, Qt.AlignRight)
-        text = 'Otvory, výrezy a obrys sa režú po vrstvách. Nad výškou priblíženia ide nástroj rýchloposuvom.'
-        g.addWidget(hint(text), 7, 0, 1, 4)
+        g.addWidget(QLabel('Výška priblíženia'), 7, 0, 1, 2)
+        w = self.add_field('approach_z', spin(prm.approach_z, 0.2, 2.0, 2, ' mm', 0.1, width=78))
+        g.addWidget(w, 7, 3, Qt.AlignRight)
+        text = (
+            'Otvory, výrezy a obrys sa režú po vrstvách. Krok plochej frézy je v percentách jej priemeru. '
+            'Nad výškou priblíženia ide nástroj rýchloposuvom.'
+        )
+        g.addWidget(hint(text), 8, 0, 1, 4)
         sv.addWidget(self.adv_box)
         sv.addStretch(1)
 
@@ -519,6 +587,13 @@ class Main(QMainWindow):
                 w.currentIndexChanged.connect(self.param_changed)
             else:
                 w.valueChanged.connect(self.param_changed)
+        self.fields['copper_um'].currentIndexChanged.connect(self.copper_changed)
+        self.applying_tool = False
+        for role, fields in ROLE_FIELDS.items():
+            self.fields['lib_' + role].currentIndexChanged.connect(lambda _i, role=role: self.library_tool_chosen(role))
+            for key in fields:
+                self.fields[key].valueChanged.connect(lambda *_, role=role: self.tool_value_edited(role))
+        self.match_library_tools()
         self.adv_btn.setChecked(self.store.value('advanced_open', False, type=bool))
         self.show_advanced(self.adv_btn.isChecked())
         self.sync_stock_fields()
@@ -540,15 +615,21 @@ class Main(QMainWindow):
         tools['clear'].name = 'Flat End %.3g mm' % f['t_clear']
         tools['vbit'].name = 'Engraving %g deg x %.3g mm' % (f['t_vang'], f['t_vtip'])
         tools['corn'].name = 'Corn %.3g mm' % f['t_corn']
+        for role in tools:  # a library tool keeps Makera's name, which Studio shows
+            t = self.library.get(f['lib_' + role]) if self.library and f['lib_' + role] else None
+            if t:
+                tools[role].name = t.name
         for key, tl in tools.items():
             tl.feed, tl.plunge, tl.rpm = f['feed_' + key], f['plunge_' + key], f['rpm_' + key]
         prm = cam.Params(
             thickness=f['thick'],
+            copper_thickness=int(f['copper_um']) / 1000,
             copper_depth=f['depth'],
             tab_count=f['tabs'],
             full_clear=f['full'],
             level_step=f['level_step'],
             approach_z=f['approach_z'],
+            clear_step=f['clear_pct'] / 50,  # % of the diameter -> fraction of the radius
         )
         return tools, prm, (f['stock_w'], f['stock_h']), f['anchor']
 
@@ -570,6 +651,64 @@ class Main(QMainWindow):
         self.sync_stock_fields()
         self.save_settings()
         self.invalidate('Nastavenia sa zmenili – vypočítaj znova.')
+
+    def library_tool_chosen(self, role):
+        """Fill in the size and cutting data of the tool picked from Makera's library."""
+        key = self.fields['lib_' + role].currentData()
+        t = self.library.get(key) if self.library and key else None
+        if not t:
+            return
+        f = self.fields
+        self.applying_tool = True
+        try:
+            if role == 'vbit':
+                f['t_vtip'].setValue(t.diameter)
+                f['t_vang'].setValue(2 * t.half_angle)
+            else:
+                f['t_' + role].setValue(t.diameter)
+            f['feed_' + role].setValue(t.feed)
+            f['plunge_' + role].setValue(t.plunge)
+            f['rpm_' + role].setValue(t.rpm)
+            if role == 'corn' and t.step_down:
+                f['level_step'].setValue(t.step_down)
+            if role == 'clear' and t.step_over_pct:
+                f['clear_pct'].setValue(t.step_over_pct)
+        finally:
+            self.applying_tool = False
+        self.save_settings()
+
+    def tool_value_edited(self, role):
+        """A value changed by hand no longer belongs to the library tool shown: switch to 'own values'."""
+        pick = self.fields['lib_' + role]
+        if self.applying_tool or not pick.currentData():
+            return
+        pick.blockSignals(True)
+        pick.setCurrentIndex(0)
+        pick.blockSignals(False)
+        self.store.setValue('lib_' + role, '')
+
+    def match_library_tools(self):
+        """Show the library tool that the current values belong to (first start, or values typed by hand)."""
+        if not self.library:
+            return
+        f = {key: field_value(w) for key, w in self.fields.items()}
+        for role, _, _ in ROLES:
+            pick = self.fields['lib_' + role]
+            if pick.currentData():
+                continue
+            size = (f['t_vtip'], f['t_vang'] / 2) if role == 'vbit' else (f['t_' + role], 0.0)
+            cut = (f['feed_' + role], f['plunge_' + role], f['rpm_' + role])
+            for t in self.library.for_role(role):
+                if t.custom or (t.diameter, t.half_angle) != size or (t.feed, t.plunge, t.rpm) != cut:
+                    continue
+                pick.blockSignals(True)
+                pick.setCurrentIndex(pick.findData(t.key))
+                pick.blockSignals(False)
+                break
+
+    def copper_changed(self, _index):
+        """A different copper foil: suggest the depth that goes through it (the user may still change it)."""
+        self.fields['depth'].setValue(cam.COPPER_DEPTH[int(self.fields['copper_um'].currentData())])
 
     def side_changed(self, _id, on):
         if not on:
@@ -768,7 +907,9 @@ class Main(QMainWindow):
             return
         _, prm, _, _ = self.settings()
         design = self.design
-        self.start(lambda jb: job.check_file(design, fn, prm.thickness, prm.full_clear, progress=jb.say))
+        self.start(
+            lambda jb: job.check_file(design, fn, prm.thickness, prm.full_clear, prm.copper_thickness, progress=jb.say)
+        )
 
     def job_ended(self, tag):
         """Common end of a compute/check job. Returns False when its result no longer applies."""
@@ -1128,6 +1269,56 @@ class Main(QMainWindow):
         e.accept()
 
 
+SK_BUTTONS = {
+    'OK': 'OK',
+    'Save': 'Uložiť',
+    'Save All': 'Uložiť všetko',
+    'Open': 'Otvoriť',
+    '&Yes': 'Án&o',
+    'Yes to &All': 'Áno pre &všetko',
+    '&No': '&Nie',
+    'N&o to All': 'Nie pre vš&etko',
+    'Abort': 'Prerušiť',
+    'Retry': 'Skúsiť znova',
+    'Ignore': 'Ignorovať',
+    'Close': 'Zavrieť',
+    'Cancel': 'Zrušiť',
+    'Discard': 'Zahodiť',
+    "Don't Save": 'Neukladať',
+    'Help': 'Pomocník',
+    'Apply': 'Použiť',
+    'Reset': 'Obnoviť',
+    'Restore Defaults': 'Obnoviť predvolené',
+}
+
+
+class ButtonTexts(QTranslator):
+    """Qt 6 takes the texts of standard dialog buttons from the QPlatformTheme context, which Qt's Slovak
+    translation does not cover. None (a null string) passes the question on to the other translators;
+    an empty string would end it with an empty text."""
+
+    def translate(self, context, source, disambiguation=None, n=-1):
+        return SK_BUTTONS.get(source) if context == 'QPlatformTheme' else None
+
+
+def install_qt_translation(app):
+    """Slovak texts for Qt's own widgets (dialog buttons, context menus). True when Qt's translation was found."""
+    import PySide6
+
+    here = Path(PySide6.__file__).parent
+    folders = [QLibraryInfo.path(QLibraryInfo.TranslationsPath), here / 'translations', here / 'Qt' / 'translations']
+    qt = QTranslator(app)
+    found = any(qt.load(QLocale(QLocale.Slovak, QLocale.Slovakia), 'qtbase', '_', str(f)) for f in folders)
+    if found:
+        app.installTranslator(qt)
+    else:
+        log.warning('Qt translation qtbase_sk not found in %s', folders)
+    buttons = ButtonTexts(app)
+    app.installTranslator(buttons)
+    app.z1pcb_translators = [qt, buttons]  # the Python objects must live as long as the application
+    return found
+
+
 def update_check(out):
     """--update-check FILE: one real request to GitHub; proves TLS and certificates work in the packaged app."""
     try:
@@ -1154,6 +1345,7 @@ def main(argv=None):
     QLocale.setDefault(QLocale(QLocale.Slovak, QLocale.Slovakia))  # decimal comma, independent of Windows language
     app = QApplication(argv)
     app.setApplicationName(APP)
+    translated = install_qt_translation(app)
     bridge = Bridge()
     applog.setup(bridge.error.emit)
     ico = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[1])) / 'assets' / 'z1pcb.png'
@@ -1182,7 +1374,7 @@ def main(argv=None):
         w.apply_detect([str(p) for p in Path(folder).iterdir()])
 
         def finish(ok):
-            ok = ok and w.result is not None and w.result.ok
+            ok = ok and translated and w.result is not None and w.result.ok  # translation: checks the package
             if ok and '--sim' in argv:  # open the simulation tab and seek into the program
                 w.mode_grp.button(1).setChecked(True)
                 w.set_mode(1)
