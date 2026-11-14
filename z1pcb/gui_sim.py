@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QGraphicsEllipseItem,
+    QGraphicsItem,
     QGraphicsPixmapItem,
     QHBoxLayout,
     QLabel,
@@ -44,6 +45,9 @@ class SimPanel(QWidget):
         self.view = View()
         sc = self.view.scene()
         self.stock = sc.addRect(QRectF(), QPen(QColor('#6b737c'), 0), QBrush(COPPER.darker(118)))
+        self.empty = sc.addSimpleText('Simulácia sa zobrazí po výpočte: Vypočítať a skontrolovať (Ctrl+R).')
+        self.empty.setBrush(QColor(colors['muted']))
+        self.empty.setFlag(QGraphicsItem.ItemIgnoresTransformations)
         self.pix = QGraphicsPixmapItem()
         self.pix.setTransformationMode(Qt.SmoothTransformation)
         sc.addItem(self.pix)
@@ -102,7 +106,7 @@ class SimPanel(QWidget):
         fv.setSpacing(0)
         fv.addLayout(bar)
         fv.addLayout(info)
-        foot.setStyleSheet('background: %s; border-top: 1px solid %s;' % (colors['panel'], colors['border']))
+        foot.setObjectName('SimFoot')  # styled in theme.QSS; a sheet without selector would reach every child
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -141,6 +145,9 @@ class SimPanel(QWidget):
         self.set_slider(0)
         self.time.setText('0:00 / 0:00')
         self.info.setText('Najprv vypočítaj alebo otvor G-kód.' if prog is None else '')
+        self.empty.setVisible(prog is None)
+        if prog is None:
+            self.view.centerOn(self.empty)
 
     def ensure_loaded(self):
         if self.pending is None or self.prog is not None:

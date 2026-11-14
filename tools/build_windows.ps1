@@ -12,7 +12,7 @@ Remove-Item -Recurse -Force .venv, build, dist -ErrorAction SilentlyContinue
 & $py -m pip install -q --no-index --find-links wheels --require-hashes --no-deps -r wheels\requirements.lock; Check 'pip install'
 if ($Test) {
     $env:QT_QPA_PLATFORM = 'offscreen'; $env:QT_QPA_FONTDIR = 'C:\Windows\Fonts'
-    & $py -m pytest -q tests; Check 'tests'
+    & $py -m pytest -q -n auto -p no:cacheprovider tests; Check 'tests'  # in parallel on every core
 }
 & $py -m PyInstaller --noconfirm --clean --windowed --name Z1PCB --icon assets\z1pcb.ico `
     --add-data 'assets\z1pcb.png;assets' -p . --exclude-module tkinter --exclude-module pytest `

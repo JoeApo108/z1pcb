@@ -1,8 +1,8 @@
 """Zoomable 2D canvas (Y up, mm)."""
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QFrame, QGraphicsScene, QGraphicsView
+from PySide6.QtWidgets import QFrame, QGraphicsItem, QGraphicsScene, QGraphicsView
 
 CANVAS = '#15171b'
 
@@ -33,7 +33,11 @@ class View(QGraphicsView):
         super().mouseMoveEvent(e)
 
     def fit(self):
-        r = self.scene().itemsBoundingRect()
+        """Show everything drawn. Hidden items and screen-sized labels (they ignore the zoom) do not count."""
+        r = QRectF()
+        for it in self.scene().items():
+            if it.isVisible() and not it.flags() & QGraphicsItem.ItemIgnoresTransformations:
+                r = r.united(it.sceneBoundingRect())
         if not r.isEmpty():
             self.fitInView(r.adjusted(-4, -4, 4, 4), Qt.KeepAspectRatio)
 

@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 from conftest import DATA, fake_makera_db
-from PySide6.QtCore import QLocale, Qt
+from PySide6.QtCore import QLocale, QPointF, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractSlider, QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QAbstractSlider, QApplication, QFileDialog, QMessageBox, QToolButton, QWidget
 
 from z1pcb import gui, theme
 
@@ -161,6 +161,7 @@ def test_result_matches_new_computation_in_simulation(app, win):
     win.fields['full'].setChecked(True)
     assert win.sim.prog is None
     second = computed(app, win).prog.total
+    QTest.mouseClick(win.mode_grp.button(1), Qt.LeftButton)  # the change sent the view back to the board
     assert win.sim.prog.total == second != first
 
 
@@ -169,7 +170,9 @@ def test_no_abort(name):
     p = subprocess.run(
         [sys.executable, str(Path(__file__).parent / 'scenarios.py'), name], capture_output=True, timeout=300
     )
-    assert p.returncode == 0, p.stderr.decode()[-500:]
+    # 75: closed while still computing, the process ended on purpose (no abort, no hang)
+    assert p.returncode in (0, gui.EXIT_BUSY), p.stderr.decode()[-500:]
+    assert b'Destroyed while thread' not in p.stderr
 
 
 def test_library_tool_fills_size_and_cutting_data(app, tmp_path, monkeypatch):
@@ -220,3 +223,115 @@ def test_mask_job_saves_two_programs(app, win, monkeypatch, tmp_path):
     win.apply_detect([f for f in FILES if 'Mask' not in f])
     assert win.design.mask is None and not win.fields['with_mask'].isEnabled()
     assert win.settings()[1].mask is False  # still ticked, but no mask file: a single program
+
+
+@pytest.mark.parametrize('width', [1000, 1440])
+def test_preview_header_fits_a_narrow_window(app, win, width):
+    win.resize(width, 760)
+    for _ in range(5):
+        app.processEvents()
+    head = win.findChild(QWidget, 'PreviewHead')
+    inside = head.rect()
+    shown = [w for w in head.findChildren(QToolButton) if w.isVisible()]
+    assert len(shown) >= 12  # 2 modes, 7 layers, 3 zoom buttons
+    for w in shown:
+        r = w.rect().translated(w.mapTo(head, w.rect().topLeft()))
+        assert inside.contains(r), (w.text(), r, inside)
+
+
+def test_tabs_are_drawn_as_bridges_with_an_explanation(app, win):
+    r = computed(app, win)
+    assert len(r.report['tab_segments']) == r.report['tabs'] == 4
+    tips = [i.toolTip() for i in win.view.scene().items() if i.toolTip().startswith('Mostík')]
+    assert len(tips) == 4 and '0,5 mm' in tips[0]
+
+
+def test_one_picked_file_opens_its_folder_and_is_remembered(app, win, monkeypatch, tmp_path):
+    win.apply_detect([])
+    one = str(DATA / 'ir_lista_cnc.drl')
+    monkeypatch.setattr(QFileDialog, 'getOpenFileNames', lambda *a, **k: ([one], ''))
+    win.pick_files()
+    assert win.design is not None and win.design.mask is not None  # the whole folder, mask included
+    assert win.recent()[0] == str(DATA)
+    win.fill_recent_menu()
+    assert [a.text() for a in win.recent_menu.actions()][0] == str(DATA)
+
+
+def test_save_name_from_the_design(app, win, monkeypatch, tmp_path):
+    computed(app, win)
+    seen = []
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda _w, _t, default, _f: seen.append(default) or ('', ''))
+    win.save()
+    assert Path(seen[0]).name == 'ir_lista_cnc_spodna.cnc'
+    assert gui.project_name('Gerber_BottomLayer.GBL') == 'Gerber' and gui.project_name('board-F_Cu.gtl') == 'board'
+
+
+def test_click_on_a_failed_check_zooms_to_it(app, win):
+    from z1pcb import job
+
+    design = win.design
+    win.start(lambda jb: job.check_file(design, DATA / 'studio_0.1.3.0_bottom.nc'))
+    wait(app, lambda: not win.busy())
+    row = next(i for i in range(win.table.rowCount()) if win.table.item(i, 0).text().startswith('Skraty'))
+    assert row in win.row_geom
+    win.view.fit()
+    before = win.view.transform().m11()
+    win.zoom_to_row(row, 0)
+    seen = win.view.mapToScene(win.view.viewport().rect()).boundingRect()
+    x, y = win.result.res['shorts'][0]['at']
+    assert win.view.transform().m11() > 1.5 * before and seen.contains(QPointF(x, y))
+
+
+def test_window_layout_is_remembered(app, tmp_path, monkeypatch):
+    """Size and splitters are stored on close and applied on the next start. (Offscreen Qt does not keep the
+    window size, so the restored pixel sizes are checked by hand on macOS: 458 px sidebar back as 458.)"""
+    monkeypatch.setenv('Z1PCB_SETTINGS', str(tmp_path / 'w.ini'))
+    w = gui.Main()
+    w.show()
+    w.splitters['split_main'].setSizes([420, 900])
+    app.processEvents()
+    state = w.splitters['split_main'].saveState()
+    w.close()
+    again = gui.Main()
+    assert again.store.value('split_main') == state and again.store.contains('window')
+    again.show()
+    assert again.layout_restored
+    again.close()
+
+
+def test_side_without_copper_keeps_the_result(app, win):
+    r = computed(app, win)
+    win.side_grp.button(1).click()  # 'Vrchná': this folder has bottom copper only
+    assert win.side() == 'bottom' and win.result is r and win.save_btn.isEnabled()
+    assert 'vrchnej' in win.stage.text()
+
+
+def test_changed_setting_leaves_an_empty_simulation_for_the_board(app, win):
+    computed(app, win)
+    QTest.mouseClick(win.mode_grp.button(1), Qt.LeftButton)
+    assert win.stack.currentIndex() == 1 and win.sim.prog is not None
+    win.fields['depth'].setValue(0.09)
+    assert win.result is None and win.stack.currentIndex() == 0  # the board view, not a black simulation
+    QTest.mouseClick(win.mode_grp.button(1), Qt.LeftButton)
+    assert win.sim.empty.isVisible() and 'Ctrl+R' in win.sim.empty.text()
+
+
+def test_isolation_only_shows_the_copper_that_stays(app, win):
+    computed(app, win)  # the win fixture mills isolation only
+    tips = [i.toolTip() for i in win.view.scene().items()]
+    assert any(t.startswith('Voľná meď, ktorá ostane') for t in tips)
+    win.fields['full'].setChecked(True)
+    computed(app, win)
+    assert not any(i.toolTip().startswith('Voľná meď') for i in win.view.scene().items())
+
+
+def test_joins_are_drawn_dashed_and_explained(app, win):
+    win.fields['full'].setChecked(True)
+    r = computed(app, win)
+    joins = r.report['link_segments']
+    assert len(joins[2]) > 100 and len(joins[4]) > 10
+    dashed = [i for i in win.view.scene().items() if i.toolTip().startswith('Prejazd v reze')]
+    assert len(dashed) == 2  # one dashed item for the engraver, one for the flat cutter
+    assert all(i.pen().style() == Qt.DashLine for i in dashed)
+    cuts, hops = gui.split_joins([[(0, 0), (1, 0), (2, 0), (3, 0)]], [((1, 0), (2, 0))])
+    assert cuts == [[(0, 0), (1, 0)], [(2, 0), (3, 0)]] and hops == [[(1, 0), (2, 0)]]

@@ -57,7 +57,7 @@ Not yet verified on the machine: the height map (autoleveling) with G-code from 
 
 ## Tests and formatting
 
-    python -m pytest -q        # ~2 min; the window is tested without a screen (offscreen)
+    python -m pytest -q -n auto   # in parallel, ~1 min; the window is tested without a screen (offscreen)
     ruff format . && ruff check .
 
 ## Layout

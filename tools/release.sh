@@ -6,17 +6,25 @@
 # private/vm.env (not in git) names the build machine: Z1_VM=user@host  Z1_KEY=path-to-ssh-key
 set -eo pipefail
 cd "$(dirname "$0")/.."
+root=$PWD
 source private/vm.env
 ssh_vm=(ssh -o BatchMode=yes -i ${~Z1_KEY} $Z1_VM)
-ver=$(sed -n "s/^__version__ = '\(.*\)'/\1/p" z1pcb/__init__.py)
 if [ -n "$(git status --porcelain)" ] && [ "$1" != --dirty ]; then
     echo "uncommitted changes: commit first, or use --dirty for a test build" >&2
     exit 1
 fi
-.venv/bin/python -m pytest -q tests
-[ -f wheels/requirements.lock ] || zsh tools/fetch_wheels.sh
+# Snapshot the source first: a release is built from the commit, so later edits in the tree cannot leak in
 tmp=$(mktemp -d)
-git ls-files -co --exclude-standard | while read -r f; do if [ -f "$f" ]; then print -r -- "$f"; fi; done | zip -q -@ $tmp/src.zip
+if [ "$1" = --dirty ]; then
+    git ls-files -co --exclude-standard | while read -r f; do if [ -f "$f" ]; then print -r -- "$f"; fi; done | zip -q -@ $tmp/src.zip
+else
+    git archive --format=zip -o $tmp/src.zip HEAD
+    echo "Building commit $(git rev-parse --short HEAD)"
+fi
+mkdir $tmp/src && unzip -q $tmp/src.zip -d $tmp/src
+ver=$(sed -n "s/^__version__ = '\(.*\)'/\1/p" $tmp/src/z1pcb/__init__.py)
+(cd $tmp/src && "$root/.venv/bin/python" -m pytest -q -n auto -p no:cacheprovider tests)  # the snapshot is what gets tested
+[ -f wheels/requirements.lock ] || zsh tools/fetch_wheels.sh
 zip -qr $tmp/src.zip wheels
 scp -q -i ${~Z1_KEY} $tmp/src.zip $Z1_VM:build/z1pcb-src.zip
 $ssh_vm 'Remove-Item -Recurse -Force build\z1pcb -ErrorAction SilentlyContinue; Expand-Archive -Force build\z1pcb-src.zip -DestinationPath build\z1pcb; cd build\z1pcb; powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_windows.ps1 -Test; exit $LASTEXITCODE'

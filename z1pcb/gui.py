@@ -1,6 +1,9 @@
 """Z1 PCB: desktop app (PySide6). Gerber + Excellon -> checked G-code for Makera Z1."""
 
+import logging
+import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -49,6 +52,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shapely import unary_union
 
 from . import __version__ as VERSION
 from . import applog, cam, gcode, gerberio, job, makera_lib, updates
@@ -59,9 +63,10 @@ from .fmt import hms, num
 from .geom import as_polys
 from .gui_sim import SimPanel
 from .theme import BANNER, LAYER, C, apply_theme, swatch
-from .widgets import Combo, card, hint, ispin, section, spin
+from .widgets import Combo, FlowLayout, card, hint, ispin, section, spin
 
 APP = 'Z1 PCB'
+EXIT_BUSY = 75  # closed while a job was still computing
 STAGES = {
     'clear': 'Čistenie voľnej medi (plochá fréza)',
     'isolate': 'Izolácia (rytec)',
@@ -167,6 +172,43 @@ def field_value(w):
     return w.currentData() if isinstance(w, Combo) else w.value()
 
 
+DESIGN_FILES = (
+    'Gerber a vŕtanie (*.gbr *.ger *.gtl *.gbl *.gts *.gbs *.gto *.gbo *.gm1 *.gko *.gml *.drl *.xln *.exc *.txt);;'
+    'Všetky súbory (*)'
+)
+LAYER_SUFFIX = re.compile(
+    r'[-_. ]?(([bf][._]?(cu|mask|silkscreen|paste))|edge[._]?cuts|(bottom|top)(layer|copper)?)$', re.I
+)
+
+
+def project_name(copper_path):
+    """'ir_lista_cnc-B_Cu.gbl' -> 'ir_lista_cnc': the design's name without the layer part."""
+    stem = Path(copper_path).stem
+    return LAYER_SUFFIX.sub('', stem) or stem
+
+
+def split_joins(lines, joins, tol=0.01):
+    """Cut the straight joins between paths out of the drawn polylines: (cutting lines, joining segments)."""
+    if not joins:
+        return lines, []
+    key = lambda p: (round(p[0] / tol), round(p[1] / tol))
+    wanted = {(key(a), key(b)) for a, b in joins}
+    cuts, hops = [], []
+    for pts in lines:
+        cur = [pts[0]]
+        for a, b in zip(pts, pts[1:]):
+            if (key(a), key(b)) in wanted:
+                if len(cur) > 1:
+                    cuts.append(cur)
+                hops.append([a, b])
+                cur = [b]
+            else:
+                cur.append(b)
+        if len(cur) > 1:
+            cuts.append(cur)
+    return cuts, hops
+
+
 def make_store():
     """User settings; tests and self-tests point Z1PCB_SETTINGS at a throw-away file."""
     path = os.environ.get('Z1PCB_SETTINGS')
@@ -207,9 +249,13 @@ class Main(QMainWindow):
         split.setSizes([390, 1050])
         split.setHandleWidth(1)
         self.setCentralWidget(split)
+        self.splitters = {'split_main': split, 'split_right': right}
         self.build_status_and_menu()
         self.restore_settings()
         self.set_idle_banner()
+        if self.store.contains('window'):
+            self.restoreGeometry(self.store.value('window'))
+        self.layout_restored = False  # splitters: once the window has its size (showEvent)
         self.setWindowTitle('%s %s' % (APP, VERSION))
         self.setAcceptDrops(True)
 
@@ -228,8 +274,9 @@ class Main(QMainWindow):
 
         sv.addWidget(section('Vstupné súbory'))
         box, g = card()
-        open_btn = QPushButton('Otvoriť priečinok s výstupom z návrhu…')
-        open_btn.clicked.connect(self.pick_folder)
+        open_btn = QPushButton('Otvoriť súbory návrhu…')
+        open_btn.setToolTip('Vyber ľubovoľný súbor z priečinka s výstupom z návrhu, načíta sa celý priečinok.')
+        open_btn.clicked.connect(self.pick_files)
         g.addWidget(open_btn, 0, 0, 1, 3)
         self.file_lbl = {}
         files = (('copper', 'Meď'), ('outline', 'Obrys'), ('drills', 'Vŕtanie'), ('mask', 'Maska'))
@@ -445,61 +492,64 @@ class Main(QMainWindow):
     def build_preview(self):
         self.view = View()
         self.view.cursor_mm.connect(lambda x, y: self.coord.setText('návrh X %s   Y %s mm' % (num(x, 2), num(y, 2))))
-        bar = QHBoxLayout()
-        bar.setContentsMargins(12, 8, 12, 8)
-        bar.setSpacing(4)
+        head = QWidget()
+        head.setObjectName('PreviewHead')
+        bar = FlowLayout(head)  # wraps to a second row instead of pushing buttons out of a narrow window
+
+        def group(widgets):
+            box = QWidget()
+            row = QHBoxLayout(box)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            for w in widgets:
+                row.addWidget(w)
+            return box
+
         self.mode_grp = QButtonGroup(self)
+        modes = []
         for i, text in enumerate(('Dráhy', 'Simulácia')):
             b = QToolButton()
             b.setObjectName('Seg')
             b.setText(text)
             b.setCheckable(True)
             self.mode_grp.addButton(b, i)
-            bar.addWidget(b)
+            modes.append(b)
         self.mode_grp.button(0).setChecked(True)
         self.mode_grp.idClicked.connect(self.set_mode)
-        bar.addSpacing(16)
-        self.layer_box = QWidget()
-        lb = QHBoxLayout(self.layer_box)
-        lb.setContentsMargins(0, 0, 0, 0)
-        lb.setSpacing(4)
+        bar.addWidget(group(modes))
         self.show_layer = {}
         layers = (
-            ('board', 'Doska a polotovar'),
-            ('copper', 'Meď'),
-            (4, 'Plochá fréza'),
-            (2, 'Rytec'),
-            (3, 'Otvory, obrys, mostíky'),
-            (5, 'Maska'),
-            ('problem', 'Chyby'),
+            ('board', 'Doska', 'Doska a polotovar, nulový bod X0 Y0'),
+            ('copper', 'Meď', 'Meď z návrhu; bez čistenia aj voľná meď, ktorá ostane (tlmená)'),
+            (4, 'Plochá fréza', 'Dráhy plochej frézy T4'),
+            (2, 'Rytec', 'Dráhy rytca T2'),
+            (3, 'Otvory a obrys', 'Otvory, drážky, výrezy, obrys a mostíky (kukuričná fréza T3)'),
+            (5, 'Maska', 'Odkrytie plôšok v maske (T5)'),
+            ('problem', 'Chyby', 'Chyby z kontroly'),
         )
-        for key, label in layers:
+        for key, label, tip in layers:
             b = QToolButton()
             b.setObjectName('Layer')
             b.setText(label)
+            b.setToolTip(tip + ' – pohľad ako v návrhu')
             b.setIcon(swatch(LAYER[key]))
             b.setCheckable(True)
             b.setChecked(True)
             b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
             b.toggled.connect(lambda on, b=b, key=key: self.layer_toggled(b, key, on))
             self.show_layer[key] = b
-            lb.addWidget(b)
-        note = QLabel('pohľad ako v návrhu')
-        note.setObjectName('Hint')
-        lb.addSpacing(8)
-        lb.addWidget(note)
-        bar.addWidget(self.layer_box)
-        bar.addStretch(1)
-        zoom = (
+            bar.addWidget(b)
+        zoom = []
+        for text, fn in (
             ('−', lambda: self.cur_view().zoom(1 / 1.25)),
             ('+', lambda: self.cur_view().zoom(1.25)),
             ('Prispôsobiť', lambda: self.cur_view().fit()),
-        )
-        for text, fn in zoom:
+        ):
             b = QToolButton()
             b.setText(text)
             b.clicked.connect(fn)
-            bar.addWidget(b)
+            zoom.append(b)
+        bar.addWidget(group(zoom))
         self.sim = SimPanel(C)
         self.sim.message.connect(lambda m: self.stage.setText(m))
         self.sim.view.cursor_mm.connect(
@@ -508,9 +558,6 @@ class Main(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.view)
         self.stack.addWidget(self.sim)
-        head = QWidget()
-        head.setLayout(bar)
-        head.setStyleSheet('background: %s; border-bottom: 1px solid %s;' % (C['panel'], C['border']))
         center = QWidget()
         cv = QVBoxLayout(center)
         cv.setContentsMargins(0, 0, 0, 0)
@@ -535,6 +582,8 @@ class Main(QMainWindow):
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.cellClicked.connect(self.zoom_to_row)
+        self.row_geom = {}
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -575,7 +624,10 @@ class Main(QMainWindow):
             return a
 
         m = self.menuBar().addMenu('Súbor')
-        action(m, 'Otvoriť priečinok…', self.pick_folder, QKeySequence.Open)
+        action(m, 'Otvoriť súbory návrhu…', self.pick_files, QKeySequence.Open)
+        action(m, 'Otvoriť priečinok…', self.pick_folder)
+        self.recent_menu = m.addMenu('Naposledy otvorené')
+        self.recent_menu.aboutToShow.connect(self.fill_recent_menu)
         action(m, 'Znova načítať súbory', self.reload, QKeySequence('F5'))
         self.act_save = action(m, 'Uložiť G-kód…', self.save, QKeySequence.Save)
         self.act_check = action(m, 'Skontrolovať iný G-kód (napr. zo Studia)…', self.check_external)
@@ -737,8 +789,16 @@ class Main(QMainWindow):
     def side_changed(self, _id, on):
         if not on:
             return
+        side = self.side()
+        if self.detected and not self.detected['copper_top' if side == 'top' else 'copper_bottom']:
+            # nothing to mill on that side: stay where we are and keep the result
+            self.side_grp.blockSignals(True)
+            self.side_grp.button(1 if side == 'bottom' else 0).setChecked(True)
+            self.side_grp.blockSignals(False)
+            self.stage.setText('V priečinku nie je meď %s strany.' % ('vrchnej' if side == 'top' else 'spodnej'))
+            return
         if self.detected:
-            self.apply_detect(None)  # the folder may hold the other side's copper
+            self.apply_detect(None)  # the folder holds the other side's copper (and maybe its mask)
         else:
             self.invalidate('Strana sa zmenila – vypočítaj znova.')
 
@@ -785,6 +845,9 @@ class Main(QMainWindow):
         self.table.setRowCount(0)
         self.details.setText('')
         self.sim.set_program(None)
+        if self.stack.currentIndex() == 1:  # an empty simulation looks broken: show the board instead
+            self.mode_grp.button(0).setChecked(True)
+            self.set_mode(0)
         if had and why and self.design:
             self.set_banner('warn', why)
         elif not self.busy():
@@ -800,6 +863,35 @@ class Main(QMainWindow):
     def dropEvent(self, e):
         paths = [Path(u.toLocalFile()) for u in e.mimeData().urls()]
         self.apply_detect([str(q) for p in paths for q in (p.iterdir() if p.is_dir() else [p])])
+
+    def pick_files(self):
+        """One file picks its whole folder (what the app needs); several files are taken as they are."""
+        start = self.store.value('open_dir', str(Path.home()), type=str)
+        files, _ = QFileDialog.getOpenFileNames(
+            self, 'Súbory návrhu – stačí vybrať jeden, načíta sa celý priečinok', start, DESIGN_FILES
+        )
+        if not files:
+            return
+        folder = Path(files[0]).parent
+        self.store.setValue('open_dir', str(folder))
+        self.apply_detect([str(p) for p in folder.iterdir()] if len(files) == 1 else files)
+
+    def fill_recent_menu(self):
+        self.recent_menu.clear()
+        recent = [f for f in self.recent() if Path(f).is_dir()]
+        for folder in recent:
+            a = self.recent_menu.addAction(folder)
+            a.triggered.connect(lambda _=False, f=folder: self.apply_detect([str(p) for p in Path(f).iterdir()]))
+        if not recent:
+            self.recent_menu.addAction('(zatiaľ nič)').setEnabled(False)
+
+    def recent(self):
+        value = self.store.value('recent', [])
+        return [value] if isinstance(value, str) else list(value or [])
+
+    def remember_folder(self, folder):
+        recent = [str(folder)] + [f for f in self.recent() if f != str(folder)]
+        self.store.setValue('recent', recent[:8])
 
     def pick_folder(self):
         start = self.store.value('open_dir', str(Path.home()), type=str)
@@ -883,6 +975,8 @@ class Main(QMainWindow):
             self.set_banner(*error)
         folder = Path(p['copper']).parent.name if p['copper'] else ''
         self.setWindowTitle('%s %s%s' % (APP, VERSION, ' — ' + folder if folder else ''))
+        if self.design:
+            self.remember_folder(Path(p['copper']).parent)
         self.view.fit()
 
     # ---------- compute
@@ -999,7 +1093,19 @@ class Main(QMainWindow):
         else:
             self.set_banner('ok', 'Výsledok je v poriadku – G-kód môžeš uložiť.')
         self.table.setRowCount(len(r.rows))
+        self.row_geom = {}
+        places = {
+            'Skraty': unary_union(r.geom['shorts']) if r.geom['shorts'] else None,
+            'Zásah do medi': r.geom['copper_hit'],
+            'Nevyfrézovaná voľná meď': r.geom['uncut'],
+            'Pásiky medi': r.geom['thin'],
+            'Plôšky odkryté': r.geom['mask_left'],
+            'Maska odstránená mimo': r.geom['mask_extra'],
+        }
         for i, (name, value, state) in enumerate(r.rows):
+            g = next((g for k, g in places.items() if name.startswith(k)), None)
+            if state == 'bad' and g is not None and not g.is_empty:
+                self.row_geom[i] = g
             self.table.setItem(i, 0, QTableWidgetItem(name))
             v = QTableWidgetItem(value)
             v.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -1007,6 +1113,9 @@ class Main(QMainWindow):
             s = QTableWidgetItem(STATE_TEXT[state])
             s.setForeground(QColor(STATE_COLOR[state]))
             self.table.setItem(i, 2, s)
+        for i in self.row_geom:
+            for c in range(3):
+                self.table.item(i, c).setToolTip('Klikni: náhľad sa priblíži na miesto chyby.')
         self.table.resizeRowsToContents()
         self.details.setText('\n'.join(self.detail_lines(r)))
         self.redraw()
@@ -1040,7 +1149,8 @@ class Main(QMainWindow):
 
     def set_mode(self, i):
         self.stack.setCurrentIndex(i)
-        self.layer_box.setVisible(i == 0)
+        for b in self.show_layer.values():
+            b.setVisible(i == 0)
         if i == 1:
             self.sim.ensure_loaded()
             self.sim.view.setFocus()  # so that the space bar reaches keyPressEvent below, not a field
@@ -1052,6 +1162,18 @@ class Main(QMainWindow):
             self.sim.toggle()
             return
         super().keyPressEvent(e)
+
+    def zoom_to_row(self, row, _col):
+        """Show where a failed check found its problem (design view)."""
+        g = self.row_geom.get(row)
+        if g is None:
+            return
+        if self.stack.currentIndex() != 0:
+            self.mode_grp.button(0).setChecked(True)
+            self.set_mode(0)
+        self.show_layer['problem'].setChecked(True)
+        x0, y0, x1, y1 = g.bounds
+        self.view.fitInView(QRectF(x0 - 3, y0 - 3, x1 - x0 + 6, y1 - y0 + 6), Qt.KeepAspectRatio)
 
     def layer_toggled(self, button, key, on):
         button.setIcon(swatch(LAYER[key] if on else QColor(C['border'])))
@@ -1080,22 +1202,54 @@ class Main(QMainWindow):
                 pen = QPen(QColor('#6b737c'), 0, Qt.DashLine)
                 sc.addPolygon(QPolygonF([QPointF(*c) for c in corners]), pen, QBrush(QColor('#1a1d21')))
             sc.addPath(poly_path(d.board), QPen(QColor('#6b737c'), 0), QBrush(QColor('#23272d')))
-        if on('copper'):
-            sc.addPath(poly_path(d.copper), QPen(Qt.NoPen), QBrush(LAYER['copper']))
         r = self.result
+        if on('copper'):
+            if r and not r.expect.full_clear and not r.geom['uncut'].is_empty:
+                # isolation only: the free copper that stays on the board, dimmer than the nets
+                left = QColor(LAYER['copper'])
+                left.setAlpha(90)
+                item = sc.addPath(poly_path(r.geom['uncut']), QPen(Qt.NoPen), QBrush(left))
+                item.setToolTip('Voľná meď, ktorá ostane na doske (čistenie voľnej medi je vypnuté).')
+            sc.addPath(poly_path(d.copper), QPen(Qt.NoPen), QBrush(LAYER['copper']))
         if r:
             by_tool = {}
             for tool, pts, _zz in r.geom['paths']:
                 kind = r.prog.tools[tool].kind if tool in r.prog.tools else ''
                 by_tool.setdefault(5 if kind == 'mask' else tool if tool in (2, 3, 4) else 3, []).append(pts)
+            joins = r.report.get('link_segments', {})
             for tool in (4, 2, 3, 5):
                 if tool in by_tool and on(tool):
                     c = QColor(LAYER[tool])
                     c.setAlpha(200)
-                    sc.addPath(lines_path(by_tool[tool]), QPen(c, 0))
+                    cuts, hops = split_joins(by_tool[tool], joins.get(tool, []))
+                    sc.addPath(lines_path(cuts), QPen(c, 0))
+                    if hops:  # straight moves at depth between nearby paths: dashed, explained on hover
+                        pen = QPen(c, 2, Qt.DashLine)
+                        pen.setCosmetic(True)  # 2 px at any zoom; the hover area follows the width
+                        item = sc.addPath(lines_path(hops), pen)
+                        item.setToolTip(
+                            'Prejazd v reze: nástroj prejde rovno k ďalšej dráhe bez zdvihnutia. Ide len cez meď, '
+                            'ktorá sa aj tak odstraňuje (overené pre každý prejazd).'
+                        )
             if on(3):
-                for x, y in r.report.get('tab_points', []):
-                    sc.addEllipse(QRectF(x - 1.2, y - 1.2, 2.4, 2.4), QPen(QColor('#ffffff'), 0), QBrush(LAYER[3]))
+                half = r.report.get('cut_radius', 0.4) + 0.25  # just wider than the groove the outline cut makes
+                for a, b in r.report.get('tab_segments', []):  # a bridge across the outline cut
+                    dx, dy = b[0] - a[0], b[1] - a[1]
+                    length = math.hypot(dx, dy) or 1.0
+                    nx, ny = -dy / length * half, dx / length * half
+                    corners = [
+                        (a[0] + nx, a[1] + ny),
+                        (b[0] + nx, b[1] + ny),
+                        (b[0] - nx, b[1] - ny),
+                        (a[0] - nx, a[1] - ny),
+                    ]
+                    fill = QColor('#ffffff')
+                    fill.setAlpha(150)
+                    item = sc.addPolygon(QPolygonF([QPointF(*c) for c in corners]), QPen(LAYER[3], 0), QBrush(fill))
+                    item.setToolTip(
+                        'Mostík: obrys sa tu nevyreže celý, ostane %s mm materiálu. '
+                        'Dosku po frézovaní vylomíš a zvyšok zbrúsiš.' % num(r.report.get('tab_height', 0.5), 1)
+                    )
             if on('problem'):
                 red = LAYER['problem']
                 fill = QColor(red)
@@ -1146,7 +1300,8 @@ class Main(QMainWindow):
             if box.exec() != QMessageBox.Save:
                 return
         folder = self.store.value('save_dir', str(Path.home()), type=str)
-        default = Path(folder) / ('%s_%s.cnc' % (Path(self.paths_['copper']).stem, self.side()))
+        side = 'spodna' if self.side() == 'bottom' else 'vrchna'
+        default = Path(folder) / ('%s_%s.cnc' % (project_name(self.paths_['copper']), side))
         title = 'Uložiť G-kód' if len(r.parts) == 1 else 'Uložiť G-kód (2 programy, prípona _1_… a _2_… sa pridá)'
         fn, _ = QFileDialog.getSaveFileName(self, title, str(default), 'G-code (*.cnc)')
         if not fn:
@@ -1313,18 +1468,34 @@ class Main(QMainWindow):
 
     # ---------- shutdown
     def stop_threads(self):
-        """Stop background work before the window (and its threads) go away: a running QThread must not be destroyed."""
+        """Stop background work before the window goes away. A running QThread must not be destroyed, and
+        terminating one that holds Python's lock hangs the app; a job still busy after a short wait (one geometry
+        step can take a minute on a slow PC) is left to the operating system: settings are saved, the process ends."""
         self.sim.pause()
         for _, jb in self.threads:
             jb.cancelled = True
-        for th, _ in list(self.threads):
+        for th, _ in self.threads:
             th.quit()
-            if not th.wait(15000):  # one geometry step cannot be interrupted; give up only after a long wait
-                th.terminate()
-                th.wait(2000)
+        busy = [th for th, _ in self.threads if not th.wait(3000)]
         self.threads = []
+        if busy:
+            log.info('closed while computing: ending the process')
+            self.store.sync()
+            logging.shutdown()
+            os._exit(EXIT_BUSY)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self.layout_restored:
+            self.layout_restored = True
+            for key, s in self.splitters.items():
+                if self.store.contains(key):
+                    s.restoreState(self.store.value(key))
 
     def closeEvent(self, e):
+        self.store.setValue('window', self.saveGeometry())
+        for key, s in self.splitters.items():
+            self.store.setValue(key, s.saveState())
         self.hide()
         self.stop_threads()
         e.accept()

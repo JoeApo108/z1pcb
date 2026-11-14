@@ -2,6 +2,7 @@
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap
+from PySide6.QtWidgets import QToolTip
 
 C = {
     'bg': '#1d2025',
@@ -83,6 +84,9 @@ QProgressBar::chunk { background: %(accent)s; border-radius: 3px; }
 QSplitter::handle { background: %(border)s; }
 QScrollArea { border: none; background: %(bg)s; }
 #Banner { border-radius: 6px; padding: 10px 14px; font-weight: 600; }
+#PreviewHead { background: %(panel)s; border-bottom: 1px solid %(border)s; }
+#SimFoot { background: %(panel)s; border-top: 1px solid %(border)s; }
+QToolTip { color: %(text)s; background: %(panel)s; border: 1px solid %(border)s; padding: 4px 6px; }
 """
     % C
 )
@@ -110,6 +114,7 @@ def apply_theme(app):
     pal.setColor(QPalette.Disabled, QPalette.Text, QColor(C['muted']))
     pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(C['muted']))
     app.setPalette(pal)
+    QToolTip.setPalette(pal)  # Windows draws tooltips with their own palette: dark text on dark without this
     app.setStyleSheet(QSS)
 
 

@@ -121,16 +121,17 @@ def strip_passes(region):
 
 def link(blocks, keep, r, max_len):
     """Mark blocks to be reached from the previous one by cutting across instead of lifting: the hop is short
-    and the cutter on that line stays clear of the copper to keep. Returns how many were marked."""
-    n = 0
+    and the cutter on that line stays clear of the copper to keep. Returns the joining segments."""
+    joins = []
     for a, b in zip(blocks, blocks[1:]):
         p, q = a.points[-1], b.points[0]
         if math.dist(p, q) > max_len:
             continue
         line = LineString([p, q]) if math.dist(p, q) > 1e-9 else Point(p)
         b.link = not line.buffer(r, quad_segs=8).intersects(keep)
-        n += b.link
-    return n
+        if b.link and math.dist(p, q) > 1e-6:
+            joins.append((tuple(p), tuple(q)))
+    return joins
 
 
 def sweep(loops, r):
@@ -225,17 +226,18 @@ def generate(copper, board, holes, tools=None, prm=None, progress=None, mask=Non
             v_rest += strip_passes(thin.buffer(rv, quad_segs=CQ).intersection(allowed))
     report.update(clear_loops=len(t4_loops), iso_loops=len(iso), rest_loops=len(v_rest), rest_area=rest_area)
 
-    ops, links = [], 0
+    ops, links = [], {}  # tool number -> joining segments
     if t4_loops:
         blocks = [Block('path', lp, z=zc) for lp in order_paths(t4_loops)]
-        links += link(blocks, copper.buffer(prm.clear_margin - 0.01, quad_segs=CQ), r4, prm.link_max)
+        links[t_clear.number] = link(blocks, copper.buffer(prm.clear_margin - 0.01, quad_segs=CQ), r4, prm.link_max)
         ops.append(Operation('Copper clearing', t_clear, blocks))
     if iso or v_rest:
         blocks = [Block('path', lp, z=zc) for lp in order_paths(iso + v_rest)]
         if prm.full_clear:  # isolation only: a cut across free copper could leave a strip too thin to hold
-            links += link(blocks, copper.buffer(prm.vbit_margin - 0.01, quad_segs=CQ), rv, prm.link_max)
+            links[t_vbit.number] = link(blocks, copper.buffer(prm.vbit_margin - 0.01, quad_segs=CQ), rv, prm.link_max)
         ops.append(Operation('Isolation + rest', t_vbit, blocks))
-    report['links'] = links
+    report['links'] = sum(len(v) for v in links.values())
+    report['link_segments'] = links
 
     # --- solder mask: a second program scrapes the mask off the pads, before anything is drilled
     after = 1
@@ -330,7 +332,9 @@ def generate(copper, board, holes, tools=None, prm=None, progress=None, mask=Non
         slots=len(holes.slots),
         cutouts=len(board.interiors),
         tabs=n_tabs,
-        tab_points=[point_at(outer, (a + b) / 2) for a, b in tabs],
+        tab_segments=[(point_at(outer, a), point_at(outer, b)) for a, b in tabs],  # on the cutter path
+        tab_height=prm.tab_height,
+        cut_radius=r3,
         outline_min_pct=max(0.0, 100 * (1 - n_tabs * prm.tab_length / per) - 5),
         small_holes=small,
         narrow_cutouts=narrow,

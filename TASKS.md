@@ -107,3 +107,22 @@ Stav: 60 testov na Macu aj na Windows 11 (VM), build 0.3.0 z wheelov zamknutých
 - [x] Z firmvéru 1.1.3: žiadny riadok G-kódu nad 128 znakov (hlavička rozdelená, mená nástrojov skrátené; firmvér kopíruje riadok do 130-bajtového buffera bez kontroly)
 - [x] Odhad času ako firmvér: zrýchlenie 150 mm/s² pri rýchloposuvoch a zvislých pohyboch, vreteno 8 s po M3 a 4 s po M5
 - [x] Postup na stroji a README: výšková mapa musí pokryť celý polotovar (mimo nej firmvér nekoriguje), meranie sondou nezastavovať (issue #7)
+
+## Fáza 8 — z testovania na Windows (0.3.4)
+- [x] Tooltip: čierny text na tmavom pozadí → explicitný štýl QToolTip; overené vo Windows relácii (kontrast 190)
+- [x] Lišta náhľadu pri užšom okne pretekala (− + Prispôsobiť neboli vidieť) → zalamuje sa do dvoch riadkov (FlowLayout); test pri 1000 a 1440 px
+- [x] Štýl lišty a päty simulácie sa bez selektora prenášal na všetky prvky (čiary pod tlačidlami vrstiev) → štýl cez #PreviewHead / #SimFoot
+
+## Fáza 9 — drobnosti z testovania (tiež 0.3.4)
+- [x] Mostíky sa kreslia ako priečka cez drážku obrysu (nie krúžok ako otvor), s vysvetlením pri myši
+- [x] „Otvoriť súbory návrhu…“: stačí vybrať jeden súbor, načíta sa celý priečinok (výber priečinka vo Windows súbory neukazuje); výber priečinka ostal v menu
+- [x] Súbor → Naposledy otvorené (8 priečinkov)
+- [x] Veľkosť okna a delenie panelov sa pamätajú (overené ručne v okne macOS; offscreen Qt veľkosť okna nedrží)
+- [x] Predvolené meno G-kódu z názvu návrhu a strany (`ir_lista_cnc_spodna.cnc`)
+- [x] Klik na chybný riadok kontroly priblíži náhľad na miesto chyby (skraty, zásah do medi, nevyfrézovaná meď, pásiky, maska)
+- [x] `tools/release.sh`: build a testy z `git archive HEAD` (prvý build 0.3.4 zachytil rozpracované súbory z pracovného stromu)
+- [x] Zatvorenie počas dlhého výpočtu: namiesto násilného ukončenia vlákna (pri záťaži zamrzlo) sa uložia nastavenia a proces skončí (kód 75); 8 súbežných pokusov bez zamrznutia
+- [x] Testy paralelne (pytest-xdist): Mac 192 s → 53 s; build VM 7112 má 20 jadier a 16 GB (predtým 4 a 8 GB)
+- [x] Klik na „Vrchná“ bez medi vrchnej strany nezahodí výsledok; zrušený výsledok prepne náhľad zo Simulácie na Dráhy; prázdna simulácia ukáže návod; „Prispôsobiť“ ignoruje popisy
+- [x] Bez čistenia voľnej medi sa ponechaná voľná meď kreslí tlmenou farbou (s popisom)
+- [x] Prejazdy v reze (spojenia dráh) sa kreslia prerušovane, s popisom pri myši
