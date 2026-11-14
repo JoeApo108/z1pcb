@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Download the Windows wheels of the build through safe-chain and lock them by hash.
-# Result: wheels/*.whl and wheels/requirements.lock, the only source the Windows build installs from.
+# Result: requirements-windows.lock (in git), the exact packages and hashes the Windows build installs; wheels/ is a local cache.
 cd "$(dirname "$0")/.."
 source .venv/bin/activate
 [ -f ~/.safe-chain/scripts/init-posix.sh ] && source ~/.safe-chain/scripts/init-posix.sh
@@ -24,8 +24,8 @@ lines = []
 for whl in sorted(Path('wheels.new').glob('*.whl')):
     name, version = whl.name.split('-')[:2]
     lines.append('%s==%s --hash=sha256:%s' % (name, version, hashlib.sha256(whl.read_bytes()).hexdigest()))
-Path('wheels.new/requirements.lock').write_text('\n'.join(lines) + '\n')
+Path('requirements-windows.lock').write_text('\n'.join(lines) + '\n')
 print('%d wheels locked' % len(lines))
 PY
-[ -s wheels.new/requirements.lock ] || fail "lock file"
+[ -s requirements-windows.lock ] || fail "lock file"
 rm -rf wheels && mv wheels.new wheels

@@ -77,11 +77,12 @@ Not yet verified on the machine: the height map (autoleveling) with G-code from 
 
 ## Releasing
 
-    tools/release.sh             # clean tree: tests → build and tests in the Windows VM → signature
+    tools/release.sh             # clean tree: tests → Windows build and tests on GitHub Actions → signature
     tools/release.sh --dirty     # test build from a work-in-progress tree
 
-The script needs `private/vm.env` (build VM address, not in git). `tools/fetch_wheels.sh` downloads the Windows
-packages through safe-chain and locks them by hash; the build installs only those (`--require-hashes`).
+The Windows build runs on a GitHub-hosted machine (`.github/workflows/windows.yml`), started by pushing the commit
+to a temporary `build/<sha>` branch. `tools/fetch_wheels.sh` downloads the Windows packages through safe-chain and
+locks them by hash in `requirements-windows.lock`; the build installs only those (`--require-hashes`).
 `tools/collect_licenses.py` puts the license texts of everything shipped into the installer.
 The installer is signed with the key `z1pcb-release-signing-key` from `csec` (Touch ID); its public half is in
 `z1pcb/updates.py`. Publishing (`gh release create …`) is a manual step; the script prints the command.

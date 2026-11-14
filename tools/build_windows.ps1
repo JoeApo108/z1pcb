@@ -1,5 +1,5 @@
 # Build Z1PCB.exe (PyInstaller, one folder) and the installer (Inno Setup 6). Run from the repo root on Windows.
-# Packages come only from .\wheels, checked against the hashes in wheels\requirements.lock (tools/fetch_wheels.sh).
+# Packages are installed only with the hashes in requirements-windows.lock (tools/fetch_wheels.sh). Needs Python 3.13 on PATH.
 #   -Test  also run the test suite, install the result silently and self-test the installed app
 param([switch]$Test)
 $ErrorActionPreference = 'Stop'
@@ -8,8 +8,8 @@ $ver = (Select-String -Path z1pcb\__init__.py -Pattern "__version__ = '(.+)'").M
 Write-Host "Version $ver"
 $py = '.\.venv\Scripts\python.exe'
 Remove-Item -Recurse -Force .venv, build, dist -ErrorAction SilentlyContinue
-& 'C:\Program Files\Python313\python.exe' -m venv .venv; Check 'venv'
-& $py -m pip install -q --no-index --find-links wheels --require-hashes --no-deps -r wheels\requirements.lock; Check 'pip install'
+& python -m venv .venv; Check 'venv'
+& $py -m pip install -q --require-hashes --no-deps --only-binary=:all: -r requirements-windows.lock; Check 'pip install'
 if ($Test) {
     $env:QT_QPA_PLATFORM = 'offscreen'; $env:QT_QPA_FONTDIR = 'C:\Windows\Fonts'
     & $py -m pytest -q -n auto -p no:cacheprovider tests; Check 'tests'  # in parallel on every core
