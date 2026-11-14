@@ -128,4 +128,4 @@ Stav: 60 testov na Macu aj na Windows 11 (VM), build 0.3.0 z wheelov zamknutých
 - [x] Prejazdy v reze (spojenia dráh) sa kreslia prerušovane, s popisom pri myši
 - [x] Build presunutý na GitHub Actions (windows-2025, Python 3.13.17, Inno Setup 6.7.1): 91 testov, inštalácia, samotest, HTTPS; 0.3.4 z Actions podpísaná a overená (nezverejnená, zverejnená ostáva zostava z VM)
 - [x] VM 7112 zmazaná v Proxmoxe aj s diskami (2026-11-14)
-- [ ] Návrh na odstránenie (čaká na súhlas): `private/vm.env`, `private/vmexec.py`, `private/INFRA.md`, csec `z1pcb-win11-z1dev`, 3 riadky 192.168.3.128 v `~/.ssh/known_hosts`
+- [x] Zmazané pozostatky VM: `private/vm.env`, `private/vmexec.py`, `private/INFRA.md`, csec `z1pcb-win11-z1dev`, 192.168.3.128 v `~/.ssh/known_hosts`
